@@ -28,5 +28,9 @@
     ; Room size for new rooms; 0 = the server's default (Limits:MaxParticipantsPerRoom, 32).
     MaxParticipantsPerRoom = 0
 
+    ; How often (milliseconds) avatar positions go to the server, for avatars that moved; 0 = only when joining.
+    ; The viewer also reports its own position and camera over WebRTC, which the server uses near this one.
+    PositionUpdateMilliseconds = 250
+
     ; Log each provision request (without the SDP) at debug level.
     MessageDetails = false

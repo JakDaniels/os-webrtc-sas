@@ -47,6 +47,11 @@ namespace osWebRtcSas
         /// <summary>Session token from the offer, for ICE candidates.</summary>
         public string? SessionToken { get; set; }
 
+        /// <summary>The pose last sent to the server and when (position updates skip avatars that have not moved).</summary>
+        public SasPose? SentPose { get; set; }
+
+        public DateTime SentAt { get; set; }
+
         /// <summary>Leaves the room on the server (called when the viewer logs out or OpenSim drops the session).</summary>
         public Task Shutdown()
         {

@@ -14,13 +14,18 @@ gateway, this one talks to SpatialAudioServer's HTTP API:
 | the avatar | participant, `externalId` = avatar UUID, name and position (global coordinates) |
 | the viewer's SDP offer | `POST /signal/{participant}/offer` (`trickle:false`: the answer carries every server candidate) |
 | the viewer's ICE candidates | `POST /signal/{participant}/ice` |
+| the avatar moving | `POST /api/rooms/by-external/{room}/poses` (every avatar in the room at once) |
 | logout, leaving the region | participant removed |
 
 The join and session tokens stay in the simulator; viewers only see a viewer session id. Their audio goes straight to
 SpatialAudioServer over WebRTC (UDP).
 
-**Status:** region and parcel voice. Not yet: group, ad-hoc and P2P calls; positions from the simulator while you
-move; the viewer's participant list and speaking indicators (they need the server to use the viewer's data channel).
+Rooms are spatial and `tethered`: the simulator sends avatar positions to the server a few times a second
+(`PositionUpdateMilliseconds`), and the viewer reports its own avatar and camera positions over WebRTC, which the server
+uses as long as they stay near the simulator's (so nobody can move their ears across the region).
+
+**Status:** region and parcel voice, with positions. Not yet: group, ad-hoc and P2P calls; neighbouring regions; the
+viewer's participant list and speaking indicators (the server does not write to the viewer's data channel yet).
 
 ## Building
 

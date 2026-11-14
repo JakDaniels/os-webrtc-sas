@@ -53,10 +53,13 @@ namespace osWebRtcSas
         /// <summary>GET /api/rooms: every room on the server.</summary>
         public JsonArray Rooms() => SendArray(HttpMethod.Get, "api/rooms");
 
-        /// <summary>Gets or creates the room with this external id (PUT /api/rooms/by-external/{id}).</summary>
-        public JsonObject EnsureRoom(string externalId, string name, bool spatial, int maxParticipants)
+        /// <summary>
+        /// Gets or creates the room with this external id (PUT /api/rooms/by-external/{id}). The settings only apply
+        /// when it is created; the reply shows the room as it is.
+        /// </summary>
+        public JsonObject EnsureRoom(string externalId, string name, bool spatial, string clientPose, int maxParticipants)
         {
-            var body = new JsonObject { ["name"] = name, ["spatial"] = spatial };
+            var body = new JsonObject { ["name"] = name, ["spatial"] = spatial, ["clientPose"] = clientPose };
             if (maxParticipants > 0)
             {
                 body["maxParticipants"] = maxParticipants;
@@ -75,6 +78,37 @@ namespace osWebRtcSas
             }
             var result = Send(HttpMethod.Post, $"api/rooms/by-external/{Escape(roomExternalId)}/participants", body, null)!;
             return (Guid.Parse((string)result["participantId"]!), (string)result["joinToken"]!);
+        }
+
+        /// <summary>
+        /// Sets many avatars' poses in one room at once (POST /api/rooms/by-external/{room}/poses, by avatar UUID).
+        /// Returns the avatar ids the server does not have in that room.
+        /// </summary>
+        public IReadOnlyList<string> UpdatePoses(string roomExternalId, IReadOnlyList<(string AgentId, SasPose Pose)> poses)
+        {
+            var list = new JsonArray();
+            foreach (var (agentId, p) in poses)
+            {
+                list.Add(new JsonObject
+                {
+                    ["externalId"] = agentId,
+                    ["position"] = new JsonObject { ["x"] = p.X, ["y"] = p.Y, ["z"] = p.Z },
+                    ["orientation"] = new JsonObject { ["x"] = p.Qx, ["y"] = p.Qy, ["z"] = p.Qz, ["w"] = p.Qw },
+                });
+            }
+            var result = Send(HttpMethod.Post, $"api/rooms/by-external/{Escape(roomExternalId)}/poses", new JsonObject { ["poses"] = list }, null);
+            var unknown = new List<string>();
+            if (result?["unknown"] is JsonArray ids)
+            {
+                foreach (var id in ids)
+                {
+                    if ((string?)id is { } s)
+                    {
+                        unknown.Add(s);
+                    }
+                }
+            }
+            return unknown;
         }
 
         /// <summary>Removes a participant; true if it was there (404 is not an error: it may have gone already).</summary>

@@ -36,9 +36,19 @@ namespace osWebRtcSas
         private const string LogHeader = "[SAS WEBRTC VOICE]";
         private static int _consoleRegistered;
 
+        /// <summary>Rooms let the viewer report its own avatar and camera positions, near the simulator's (see the server's PLAN.md).</summary>
+        private const string ClientPose = "tethered";
+
+        /// <summary>An avatar that has not moved is still sent this often, so a missed update cannot stick.</summary>
+        private static readonly TimeSpan PoseRefresh = TimeSpan.FromSeconds(5);
+
         private readonly SasClient? _client;
         private readonly int _maxParticipants;
         private readonly bool _messageDetails;
+        private readonly System.Threading.Timer? _poseTimer;
+        private int _sendingPoses;
+        private DateTime _poseErrorLoggedAt;
+        private readonly ConcurrentDictionary<string, bool> _roomsChecked = new();
 
         /// <summary>Our sessions, by viewer session id. OpenSim's own registry forgets them before telling us about some logouts.</summary>
         private readonly ConcurrentDictionary<string, SasViewerSession> _sessions = new();
@@ -79,6 +89,14 @@ namespace osWebRtcSas
                 Log.Warn($"{LogHeader} SpatialAudioServer at {serverUri} is not answering yet: {e.Message}");
             }
             RegisterConsoleCommands();
+
+            // Avatar positions as the simulator sees them, for every avatar with a voice session.
+            var every = sas.GetInt("PositionUpdateMilliseconds", 250);
+            if (every > 0)
+            {
+                every = Math.Max(every, 100);
+                _poseTimer = new System.Threading.Timer(_ => SendPoses(), null, every, every);
+            }
         }
 
         // ------------------------------------------------------------------------------------- IWebRtcVoiceService
@@ -138,7 +156,13 @@ namespace osWebRtcSas
                         _client.RemoveParticipant(oldRoom, old);
                     }
 
-                    _client.EnsureRoom(roomId, roomName, spatial: true, _maxParticipants);
+                    var room = _client.EnsureRoom(roomId, roomName, spatial: true, ClientPose, _maxParticipants);
+                    if ((string?)room["clientPose"] is { } roomPose && !string.Equals(roomPose, ClientPose, StringComparison.OrdinalIgnoreCase)
+                        && _roomsChecked.TryAdd(roomId, true))
+                    {
+                        Log.Warn($"{LogHeader} Room {roomId} on the server is clientPose '{roomPose}', not '{ClientPose}' (it was made " +
+                            "before this version): viewers' own positions are ignored there. Delete it on the server to have it made again.");
+                    }
                     var (participantId, joinToken) = _client.AddParticipant(roomId, displayName, agentId.ToString(), pose);
                     var (answer, sessionToken) = _client.Offer(participantId, joinToken, offer);
 
@@ -231,6 +255,83 @@ namespace osWebRtcSas
         }
 
         public OSDMap VoiceSignalingRequest(OSDMap request, UUID agentId, UUID regionId) => Failed("no viewer session");
+
+        // ------------------------------------------------------------------------------------- positions
+
+        /// <summary>
+        /// Timer: sends the simulator's position for every avatar with a voice session that has moved or turned (or not
+        /// been sent for <see cref="PoseRefresh"/>), one request per room. Skipped while the previous round is running.
+        /// </summary>
+        private void SendPoses()
+        {
+            if (_client is null || System.Threading.Interlocked.Exchange(ref _sendingPoses, 1) != 0)
+            {
+                return;
+            }
+            try
+            {
+                var now = DateTime.UtcNow;
+                var byRoom = new Dictionary<string, List<(SasViewerSession Session, SasPose Pose)>>();
+                foreach (var session in _sessions.Values)
+                {
+                    if (session.ParticipantId is null || session.RoomExternalId is not { } room
+                        || !SceneManager.Instance.TryGetScene(session.RegionId, out var scene)
+                        || AvatarOf(scene, session.AgentId).Pose is not { } pose)
+                    {
+                        continue;
+                    }
+                    if (session.SentPose is { } sent && !Moved(sent, pose) && now - session.SentAt < PoseRefresh)
+                    {
+                        continue;
+                    }
+                    if (!byRoom.TryGetValue(room, out var list))
+                    {
+                        byRoom[room] = list = [];
+                    }
+                    list.Add((session, pose));
+                }
+                foreach (var (room, list) in byRoom)
+                {
+                    try
+                    {
+                        var unknown = _client.UpdatePoses(room, list.Select(e => (e.Session.AgentId.ToString(), e.Pose)).ToList());
+                        foreach (var (session, pose) in list)
+                        {
+                            session.SentPose = pose;
+                            session.SentAt = now;
+                        }
+                        if (unknown.Count > 0 && _messageDetails)
+                        {
+                            Log.Debug($"{LogHeader} Positions for avatars the server no longer has in {room}: {string.Join(", ", unknown)}");
+                        }
+                    }
+                    catch (SasException e)
+                    {
+                        if (now - _poseErrorLoggedAt > TimeSpan.FromSeconds(30))
+                        {
+                            _poseErrorLoggedAt = now;
+                            Log.Warn($"{LogHeader} Could not send avatar positions for {room} (logged at most every 30 s): {e.Message}");
+                        }
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Error($"{LogHeader} Sending avatar positions failed: {e}");
+            }
+            finally
+            {
+                System.Threading.Volatile.Write(ref _sendingPoses, 0);
+            }
+        }
+
+        /// <summary>More than 5 cm, or about 2° of turn.</summary>
+        private static bool Moved(SasPose a, SasPose b)
+        {
+            double dx = a.X - b.X, dy = a.Y - b.Y, dz = a.Z - b.Z;
+            var dot = Math.Abs(a.Qx * b.Qx + a.Qy * b.Qy + a.Qz * b.Qz + a.Qw * b.Qw);
+            return dx * dx + dy * dy + dz * dz > 0.05 * 0.05 || dot < 0.99985;
+        }
 
         // ------------------------------------------------------------------------------------- helpers
 
