@@ -1,0 +1,185 @@
+// os-webrtc-sas: WebRTC voice for OpenSimulator using SpatialAudioServer.
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+
+#nullable enable
+
+using System;
+using System.Collections.Generic;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Threading.Tasks;
+
+namespace osWebRtcSas
+{
+    /// <summary>A position and rotation in SpatialAudioServer's form (global coordinates, metres; quaternion).</summary>
+    public readonly record struct SasPose(double X, double Y, double Z, double Qx, double Qy, double Qz, double Qw);
+
+    /// <summary>A failed request to SpatialAudioServer, with its HTTP status (0 when the server could not be reached).</summary>
+    public sealed class SasException(int status, string message) : Exception(message)
+    {
+        public int Status { get; } = status;
+    }
+
+    /// <summary>
+    /// Blocking client for SpatialAudioServer's control API (API key) and signalling endpoints (join and session
+    /// tokens). OpenSim's capability handlers are synchronous, so this uses HttpClient.Send rather than blocking on
+    /// async calls (which can deadlock or starve a busy thread pool).
+    /// </summary>
+    public sealed class SasClient : IDisposable
+    {
+        private readonly HttpClient _http;
+
+        public SasClient(Uri server, string apiKey, TimeSpan timeout, bool acceptSelfSigned)
+        {
+            var handler = new HttpClientHandler();
+            if (acceptSelfSigned)
+            {
+                handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+            }
+            _http = new HttpClient(handler) { BaseAddress = server, Timeout = timeout };
+            _http.DefaultRequestHeaders.Add("X-Api-Key", apiKey);
+            Server = server;
+        }
+
+        public Uri Server { get; }
+
+        /// <summary>GET /api/status.</summary>
+        public JsonObject Status() => Send(HttpMethod.Get, "api/status", null, null)!;
+
+        /// <summary>GET /api/rooms: every room on the server.</summary>
+        public JsonArray Rooms() => SendArray(HttpMethod.Get, "api/rooms");
+
+        /// <summary>Gets or creates the room with this external id (PUT /api/rooms/by-external/{id}).</summary>
+        public JsonObject EnsureRoom(string externalId, string name, bool spatial, int maxParticipants)
+        {
+            var body = new JsonObject { ["name"] = name, ["spatial"] = spatial };
+            if (maxParticipants > 0)
+            {
+                body["maxParticipants"] = maxParticipants;
+            }
+            return Send(HttpMethod.Put, $"api/rooms/by-external/{Escape(externalId)}", body, null)!;
+        }
+
+        /// <summary>Adds (or, for the same avatar, replaces) a participant. Returns its id and one-time join token.</summary>
+        public (Guid ParticipantId, string JoinToken) AddParticipant(string roomExternalId, string displayName, string agentId, SasPose? pose)
+        {
+            var body = new JsonObject { ["displayName"] = displayName, ["externalId"] = agentId };
+            if (pose is { } p)
+            {
+                body["position"] = new JsonObject { ["x"] = p.X, ["y"] = p.Y, ["z"] = p.Z };
+                body["orientation"] = new JsonObject { ["x"] = p.Qx, ["y"] = p.Qy, ["z"] = p.Qz, ["w"] = p.Qw };
+            }
+            var result = Send(HttpMethod.Post, $"api/rooms/by-external/{Escape(roomExternalId)}/participants", body, null)!;
+            return (Guid.Parse((string)result["participantId"]!), (string)result["joinToken"]!);
+        }
+
+        /// <summary>Removes a participant; true if it was there (404 is not an error: it may have gone already).</summary>
+        public bool RemoveParticipant(string roomExternalId, Guid participantId)
+        {
+            try
+            {
+                Send(HttpMethod.Delete, $"api/rooms/by-external/{Escape(roomExternalId)}/participants/{participantId}", null, null);
+                return true;
+            }
+            catch (SasException e) when (e.Status == (int)HttpStatusCode.NotFound)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Sends the viewer's SDP offer with the join token and returns the answer, which carries all of the server's
+        /// ICE candidates (trickle:false: a viewer has no way to receive more), and the session token for later calls.
+        /// </summary>
+        public (string AnswerSdp, string SessionToken) Offer(Guid participantId, string joinToken, string offerSdp)
+        {
+            var result = Send(HttpMethod.Post, $"signal/{participantId}/offer",
+                new JsonObject { ["sdp"] = offerSdp, ["trickle"] = false }, joinToken)!;
+            return ((string)result["sdp"]!, (string)result["sessionToken"]!);
+        }
+
+        /// <summary>Forwards the viewer's ICE candidates (and/or the end of them).</summary>
+        public void SendCandidates(Guid participantId, string sessionToken, IReadOnlyList<(string Candidate, uint MLineIndex)> candidates, bool completed)
+        {
+            var list = new JsonArray();
+            foreach (var (candidate, index) in candidates)
+            {
+                list.Add(new JsonObject { ["candidate"] = candidate, ["sdpMLineIndex"] = index });
+            }
+            var body = new JsonObject { ["candidates"] = list };
+            if (completed)
+            {
+                body["completed"] = true;
+            }
+            Send(HttpMethod.Post, $"signal/{participantId}/ice", body, sessionToken);
+        }
+
+        public void Dispose() => _http.Dispose();
+
+        private static string Escape(string segment) => Uri.EscapeDataString(segment);
+
+        private JsonArray SendArray(HttpMethod method, string path) =>
+            JsonNode.Parse(SendText(method, path, null, null)) as JsonArray ?? new JsonArray();
+
+        /// <summary>Sends a request and returns the JSON object reply (null for an empty one). Throws <see cref="SasException"/>.</summary>
+        private JsonObject? Send(HttpMethod method, string path, JsonObject? body, string? bearer)
+        {
+            var text = SendText(method, path, body, bearer);
+            return text.Length == 0 ? null : JsonNode.Parse(text) as JsonObject;
+        }
+
+        private string SendText(HttpMethod method, string path, JsonObject? body, string? bearer)
+        {
+            using var request = new HttpRequestMessage(method, path);
+            if (body is not null)
+            {
+                request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
+            }
+            if (bearer is not null)
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+            }
+
+            HttpResponseMessage response;
+            try
+            {
+                response = _http.Send(request);
+            }
+            catch (Exception e) when (e is HttpRequestException or TaskCanceledException or OperationCanceledException)
+            {
+                throw new SasException(0, $"{method} {path}: server not reachable ({e.Message})");
+            }
+
+            using (response)
+            {
+                using var reader = new System.IO.StreamReader(response.Content.ReadAsStream());
+                var text = reader.ReadToEnd();
+                if (!response.IsSuccessStatusCode)
+                {
+                    throw new SasException((int)response.StatusCode, $"{method} {path}: {(int)response.StatusCode} {ProblemText(text)}");
+                }
+                return text;
+            }
+        }
+
+        /// <summary>The detail (or title) of an RFC 9457 problem reply, or the text itself.</summary>
+        private static string ProblemText(string text)
+        {
+            try
+            {
+                if (JsonNode.Parse(text) is JsonObject problem)
+                {
+                    return (string?)problem["detail"] ?? (string?)problem["title"] ?? text;
+                }
+            }
+            catch (JsonException)
+            {
+            }
+            return text;
+        }
+    }
+}

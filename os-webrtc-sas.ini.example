@@ -1,0 +1,32 @@
+; os-webrtc-sas: WebRTC voice for OpenSimulator using SpatialAudioServer.
+; Copy to bin/config/os-webrtc-sas.ini (OpenSim reads every .ini in bin/config) and fill in [SasWebRtcVoice].
+; Do not also enable os-webrtc-janus.ini: both configure the same [WebRtcVoice] section.
+
+[WebRtcVoice]
+    ; OpenSim's own WebRTC voice region module (OpenSim/Addons/os-webrtc-janus) serves the viewer's voice
+    ; capabilities and checks estate and parcel permissions; os-webrtc-sas is the back end it hands requests to.
+    Enabled = true
+    SpatialVoiceService = WebRtcSas.dll:SasVoiceService
+    ; Group, ad-hoc and P2P calls are not supported yet; they are refused.
+    NonSpatialVoiceService = WebRtcSas.dll:SasVoiceService
+    MessageDetails = false
+
+[SasWebRtcVoice]
+    ; SpatialAudioServer's address as this simulator reaches it. Viewers connect their audio to the server
+    ; directly (WebRTC over UDP), so it must also be reachable from them.
+    ServerURI = http://192.168.1.10:5000
+
+    ; A control-API key: on the server run "SpatialAudioServer apikey create <label>".
+    APIKey = sas_ChangeMe
+
+    ; Accept the server's self-signed certificate when ServerURI is https (LAN testing only).
+    AcceptSelfSignedCertificate = false
+
+    ; Seconds to wait for the server on each request.
+    RequestTimeoutSeconds = 10
+
+    ; Room size for new rooms; 0 = the server's default (Limits:MaxParticipantsPerRoom, 32).
+    MaxParticipantsPerRoom = 0
+
+    ; Log each provision request (without the SDP) at debug level.
+    MessageDetails = false
