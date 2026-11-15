@@ -37,5 +37,11 @@
     RegisterGuestNames = true
     GuestLastName = (web)
 
+    ; Show web and bot participants in-world as NPCs (default appearance, named like the voice list, e.g.
+    ; "Simon (web)"), standing where they are in the room and turning with them:
+    ;   off: never; optional: those that ask (the web client's "Create an NPC in-world" tick box, the load tool's
+    ;   --npc); always: all of them, so nobody listens in the region unseen. Needs [NPC] Enabled = true.
+    WebUserAvatars = off
+
     ; Log each provision request (without the SDP) at debug level.
     MessageDetails = false

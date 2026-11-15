@@ -62,15 +62,27 @@ namespace osWebRtcSas
         /// Gets or creates the room with this external id (PUT /api/rooms/by-external/{id}). The settings only apply
         /// when it is created; the reply shows the room as it is.
         /// </summary>
-        public JsonObject EnsureRoom(string externalId, string name, bool spatial, string clientPose, int maxParticipants)
+        public JsonObject EnsureRoom(string externalId, string name, bool spatial, string clientPose, int maxParticipants, string inWorldAvatars)
         {
-            var body = new JsonObject { ["name"] = name, ["spatial"] = spatial, ["clientPose"] = clientPose };
+            var body = new JsonObject
+            {
+                ["name"] = name, ["spatial"] = spatial, ["clientPose"] = clientPose, ["inWorldAvatars"] = inWorldAvatars,
+            };
             if (maxParticipants > 0)
             {
                 body["maxParticipants"] = maxParticipants;
             }
             return Send(HttpMethod.Put, $"api/rooms/by-external/{Escape(externalId)}", body, null)!;
         }
+
+        /// <summary>Sets whether this simulator shows the room's web users in-world (PATCH /api/rooms/by-external/{id}).</summary>
+        public JsonObject UpdateRoom(string externalId, string inWorldAvatars) =>
+            Send(HttpMethod.Patch, $"api/rooms/by-external/{Escape(externalId)}", new JsonObject { ["inWorldAvatars"] = inWorldAvatars }, null)!;
+
+        /// <summary>Ties a participant to the NPC made for it (PATCH …/participants/{id} avatarId); viewers then know it by the NPC.</summary>
+        public void SetAvatarId(string roomExternalId, Guid participantId, Guid avatarId) =>
+            Send(HttpMethod.Patch, $"api/rooms/by-external/{Escape(roomExternalId)}/participants/{participantId}",
+                new JsonObject { ["avatarId"] = avatarId.ToString() }, null);
 
         /// <summary>Adds (or, for the same avatar, replaces) a participant. Returns its id and one-time join token.</summary>
         public (Guid ParticipantId, string JoinToken) AddParticipant(string roomExternalId, string displayName, string agentId, SasPose? pose)

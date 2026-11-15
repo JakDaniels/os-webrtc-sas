@@ -48,7 +48,15 @@ namespace osWebRtcSas
         private readonly System.Threading.Timer? _poseTimer;
         private readonly System.Threading.Timer? _nameTimer;
         private readonly string _guestLastName = "(web)";
+        private readonly bool _registerGuestNames;
         private int _registeringNames;
+
+        /// <summary>Web and bot participants shown in-world as NPCs (WebUserAvatars).</summary>
+        private readonly SasWebUserAvatars? _webUserAvatars;
+        private readonly string _webUserAvatarsMode = SasWebUserAvatars.Off;
+
+        /// <summary>Rooms told this simulator's WebUserAvatars setting.</summary>
+        private readonly ConcurrentDictionary<string, bool> _avatarSettingSent = new();
 
         /// <summary>Participant id → the name registered for it with OpenSim (browsers and bots) and its room.</summary>
         private readonly ConcurrentDictionary<UUID, (string Name, string Room)> _guestNames = new();
@@ -97,9 +105,25 @@ namespace osWebRtcSas
             }
             RegisterConsoleCommands();
 
-            // Names for participants that are not avatars (web browsers, bots), so viewers can show them.
+            // Names for participants that are not avatars (web browsers, bots), so viewers can show them; and, if
+            // enabled, NPCs for them in-world. Both from one poll of the rooms.
             _guestLastName = sas.GetString("GuestLastName", "(web)");
-            if (sas.GetBoolean("RegisterGuestNames", true))
+            _registerGuestNames = sas.GetBoolean("RegisterGuestNames", true);
+            var avatars = sas.GetString("WebUserAvatars", SasWebUserAvatars.Off);
+            if (SasWebUserAvatars.Parse(avatars) is { } mode)
+            {
+                _webUserAvatarsMode = mode;
+            }
+            else
+            {
+                Log.Warn($"{LogHeader} WebUserAvatars = {avatars} is not off, optional or always: using off");
+            }
+            if (_webUserAvatarsMode != SasWebUserAvatars.Off)
+            {
+                _webUserAvatars = new SasWebUserAvatars(_client, _webUserAvatarsMode, _guestLastName);
+                Log.Info($"{LogHeader} Web users are shown in-world as NPCs: {_webUserAvatarsMode}");
+            }
+            if (_registerGuestNames || _webUserAvatars is not null)
             {
                 _nameTimer = new System.Threading.Timer(_ => RegisterGuestNames(), null, 1000, 1000);
             }
@@ -170,7 +194,12 @@ namespace osWebRtcSas
                         _client.RemoveParticipant(oldRoom, old);
                     }
 
-                    var room = _client.EnsureRoom(roomId, roomName, spatial: true, ClientPose, _maxParticipants);
+                    var room = _client.EnsureRoom(roomId, roomName, spatial: true, ClientPose, _maxParticipants, _webUserAvatarsMode);
+                    if (!string.Equals((string?)room["inWorldAvatars"], _webUserAvatarsMode, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _client.UpdateRoom(roomId, _webUserAvatarsMode);
+                    }
+                    _avatarSettingSent[roomId] = true;
                     if ((string?)room["clientPose"] is { } roomPose && !string.Equals(roomPose, ClientPose, StringComparison.OrdinalIgnoreCase)
                         && _roomsChecked.TryAdd(roomId, true))
                     {
@@ -358,8 +387,17 @@ namespace osWebRtcSas
             try
             {
                 var rooms = _sessions.Values.Where(s => s.ParticipantId is not null).Select(s => s.RoomExternalId)
-                    .OfType<string>().Distinct().ToList();
+                    .OfType<string>().ToHashSet();
+                if (_webUserAvatars is not null)
+                {
+                    // Web users may join a region's room while no viewer here is in it.
+                    foreach (var scene in SceneManager.Instance.Scenes)
+                    {
+                        rooms.Add($"region:{scene.RegionInfo.RegionID}");
+                    }
+                }
                 var seen = new HashSet<UUID>();
+                var seenParticipants = new HashSet<Guid>();
                 var polled = new HashSet<string>();
                 foreach (var room in rooms)
                 {
@@ -371,7 +409,24 @@ namespace osWebRtcSas
                     }
                     catch (SasException)
                     {
-                        continue; // the position updates report an unreachable server
+                        continue; // not on the server (yet), or unreachable: the position updates report that
+                    }
+                    if (!_avatarSettingSent.ContainsKey(room))
+                    {
+                        try
+                        {
+                            _client.UpdateRoom(room, _webUserAvatarsMode);
+                            _avatarSettingSent[room] = true;
+                        }
+                        catch (SasException e)
+                        {
+                            Log.Warn($"{LogHeader} Could not set WebUserAvatars on room {room}: {e.Message}");
+                        }
+                    }
+                    _webUserAvatars?.Update(room, participants, seenParticipants);
+                    if (!_registerGuestNames)
+                    {
+                        continue;
                     }
                     foreach (var p in participants.OfType<System.Text.Json.Nodes.JsonObject>())
                     {
@@ -398,6 +453,8 @@ namespace osWebRtcSas
                         }
                     }
                 }
+
+                _webUserAvatars?.Sweep(polled, rooms, seenParticipants);
 
                 // Gone from a room we could read, or from a room we no longer have sessions in.
                 foreach (var (uuid, entry) in _guestNames)

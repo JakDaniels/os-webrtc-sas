@@ -27,7 +27,15 @@ uses as long as they stay near the simulator's (so nobody can move their ears ac
 People in the room who are not avatars (web browsers, bots) appear in viewers' voice lists as e.g. "Simon (web)":
 their names are registered with the simulator (`RegisterGuestNames`, `GuestLastName`).
 
-**Status:** region and parcel voice, with positions. Not yet: group, ad-hoc and P2P calls; neighbouring regions; per-peer mute and volume.
+They can also be shown in-world as **NPCs** (`WebUserAvatars`): `optional` for those that ask (SpatialAudioServer's web
+client has a "Create an NPC in-world" tick box, its load tool `--npc`), `always` for everyone (nobody listens in the
+region unseen). The NPC has the default appearance and the voice-list name, stands where the participant is in the
+room and turns with its Facing control; viewers show its white dot when it talks. It appears only while the
+participant's position is inside the room's region, and goes when the participant leaves. The module tells each room
+its setting, so the web client knows whether to offer the tick box. Needs OpenSim's NPC module (`[NPC] Enabled`).
+
+**Status:** region and parcel voice with positions, neighbouring regions, per-person mute and volume, web users as
+NPCs. Not yet: group, ad-hoc and P2P calls.
 
 ## Building
 
