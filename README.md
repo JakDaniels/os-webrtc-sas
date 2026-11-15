@@ -3,9 +3,9 @@
 Addon module for [OpenSimulator](http://opensimulator.org/) that provides WebRTC voice for current viewers
 (Firestorm, Second Life viewer) using **SpatialAudioServer**, an MCU audio server with spatial mixing.
 
-It is a back end for OpenSim's own WebRTC voice region module (`OpenSim/Addons/os-webrtc-janus`), which serves the
-viewer's voice capabilities and checks estate and parcel voice permissions. Where that add-on talks to a Janus
-gateway, this one talks to SpatialAudioServer's HTTP API:
+https://github.com/JakDaniels/SpatialAudioServer
+
+It is a back end for OpenSim's own WebRTC voice region module (`OpenSim/Addons/os-webrtc-janus`), (written by MisterBlue here: https://github.com/Misterblue/os-webrtc-janus) and then folded into the OpenSim main codebase. It serves the viewer's voice capabilities and checks estate and parcel voice permissions. Where that add-on talks to a Janus gateway, this one talks to SpatialAudioServer's HTTP API:
 
 | Viewer / OpenSim | SpatialAudioServer |
 |---|---|
