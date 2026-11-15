@@ -46,6 +46,12 @@ namespace osWebRtcSas
         private readonly int _maxParticipants;
         private readonly bool _messageDetails;
         private readonly System.Threading.Timer? _poseTimer;
+        private readonly System.Threading.Timer? _nameTimer;
+        private readonly string _guestLastName = "(web)";
+        private int _registeringNames;
+
+        /// <summary>Participant id → the name registered for it with OpenSim (browsers and bots) and its room.</summary>
+        private readonly ConcurrentDictionary<UUID, (string Name, string Room)> _guestNames = new();
         private int _sendingPoses;
         private DateTime _poseErrorLoggedAt;
         private readonly ConcurrentDictionary<string, bool> _roomsChecked = new();
@@ -89,6 +95,13 @@ namespace osWebRtcSas
                 Log.Warn($"{LogHeader} SpatialAudioServer at {serverUri} is not answering yet: {e.Message}");
             }
             RegisterConsoleCommands();
+
+            // Names for participants that are not avatars (web browsers, bots), so viewers can show them.
+            _guestLastName = sas.GetString("GuestLastName", "(web)");
+            if (sas.GetBoolean("RegisterGuestNames", true))
+            {
+                _nameTimer = new System.Threading.Timer(_ => RegisterGuestNames(), null, 1000, 1000);
+            }
 
             // Avatar positions as the simulator sees them, for every avatar with a voice session.
             var every = sas.GetInt("PositionUpdateMilliseconds", 250);
@@ -322,6 +335,89 @@ namespace osWebRtcSas
             finally
             {
                 System.Threading.Volatile.Write(ref _sendingPoses, 0);
+            }
+        }
+
+        // ------------------------------------------------------------------------------------- guest names
+
+        /// <summary>
+        /// Timer: SpatialAudioServer tells viewers about participants that are not avatars (web browsers, bots) under
+        /// their participant id, and a viewer asks its simulator for the name of every id in its voice list. So their
+        /// names are registered with OpenSim's user management ("Simon (web)"), for every room this simulator has
+        /// voice sessions in. The server announces them a couple of seconds after they connect, which is enough for
+        /// this one-second poll. Names are removed again once the participant has gone (or this simulator has no
+        /// voice sessions left in its room); viewers keep their own copy for an hour.
+        /// </summary>
+        private void RegisterGuestNames()
+        {
+            if (_client is null || System.Threading.Interlocked.Exchange(ref _registeringNames, 1) != 0)
+            {
+                return;
+            }
+            try
+            {
+                var rooms = _sessions.Values.Where(s => s.ParticipantId is not null).Select(s => s.RoomExternalId)
+                    .OfType<string>().Distinct().ToList();
+                var seen = new HashSet<UUID>();
+                var polled = new HashSet<string>();
+                foreach (var room in rooms)
+                {
+                    System.Text.Json.Nodes.JsonArray participants;
+                    try
+                    {
+                        participants = _client.Participants(room);
+                        polled.Add(room);
+                    }
+                    catch (SasException)
+                    {
+                        continue; // the position updates report an unreachable server
+                    }
+                    foreach (var p in participants.OfType<System.Text.Json.Nodes.JsonObject>())
+                    {
+                        var id = (string?)p["id"];
+                        var name = ((string?)p["displayName"])?.Trim();
+                        if (id is null || string.IsNullOrEmpty(name) || UUID.TryParse((string?)p["externalId"] ?? string.Empty, out _)
+                            || !UUID.TryParse(id, out var uuid))
+                        {
+                            continue;
+                        }
+                        seen.Add(uuid);
+                        if (_guestNames.TryGetValue(uuid, out var known) && known.Name == name)
+                        {
+                            continue;
+                        }
+                        foreach (var scene in SceneManager.Instance.Scenes)
+                        {
+                            scene.RequestModuleInterface<IUserManagement>()?.AddSystemUser(uuid, name, _guestLastName);
+                        }
+                        _guestNames[uuid] = (name, room);
+                        if (_messageDetails)
+                        {
+                            Log.Debug($"{LogHeader} Registered the name '{name} {_guestLastName}' for participant {id} in {room}");
+                        }
+                    }
+                }
+
+                // Gone from a room we could read, or from a room we no longer have sessions in.
+                foreach (var (uuid, entry) in _guestNames)
+                {
+                    if ((polled.Contains(entry.Room) && !seen.Contains(uuid)) || !rooms.Contains(entry.Room))
+                    {
+                        foreach (var scene in SceneManager.Instance.Scenes)
+                        {
+                            scene.RequestModuleInterface<IUserManagement>()?.RemoveUser(uuid);
+                        }
+                        _guestNames.TryRemove(uuid, out _);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Error($"{LogHeader} Registering guest names failed: {e}");
+            }
+            finally
+            {
+                System.Threading.Volatile.Write(ref _registeringNames, 0);
             }
         }
 

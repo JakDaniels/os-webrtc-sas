@@ -32,5 +32,10 @@
     ; The viewer also reports its own position and camera over WebRTC, which the server uses near this one.
     PositionUpdateMilliseconds = 250
 
+    ; Participants that are not avatars (web browsers, bots) are shown in viewers' voice lists under this last
+    ; name, e.g. "Simon (web)": their names are registered with the simulator so viewers can look them up.
+    RegisterGuestNames = true
+    GuestLastName = (web)
+
     ; Log each provision request (without the SDP) at debug level.
     MessageDetails = false

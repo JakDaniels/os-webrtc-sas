@@ -24,8 +24,10 @@ Rooms are spatial and `tethered`: the simulator sends avatar positions to the se
 (`PositionUpdateMilliseconds`), and the viewer reports its own avatar and camera positions over WebRTC, which the server
 uses as long as they stay near the simulator's (so nobody can move their ears across the region).
 
-**Status:** region and parcel voice, with positions. Not yet: group, ad-hoc and P2P calls; neighbouring regions; the
-viewer's participant list and speaking indicators (the server does not write to the viewer's data channel yet).
+People in the room who are not avatars (web browsers, bots) appear in viewers' voice lists as e.g. "Simon (web)":
+their names are registered with the simulator (`RegisterGuestNames`, `GuestLastName`).
+
+**Status:** region and parcel voice, with positions. Not yet: group, ad-hoc and P2P calls; neighbouring regions; per-peer mute and volume.
 
 ## Building
 

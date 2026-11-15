@@ -53,6 +53,10 @@ namespace osWebRtcSas
         /// <summary>GET /api/rooms: every room on the server.</summary>
         public JsonArray Rooms() => SendArray(HttpMethod.Get, "api/rooms");
 
+        /// <summary>GET /api/rooms/by-external/{room}/participants: everyone in the room.</summary>
+        public JsonArray Participants(string roomExternalId) =>
+            SendArray(HttpMethod.Get, $"api/rooms/by-external/{Escape(roomExternalId)}/participants");
+
         /// <summary>
         /// Gets or creates the room with this external id (PUT /api/rooms/by-external/{id}). The settings only apply
         /// when it is created; the reply shows the room as it is.
