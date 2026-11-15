@@ -11,6 +11,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace osWebRtcSas
@@ -47,8 +48,8 @@ namespace osWebRtcSas
 
         public Uri Server { get; }
 
-        /// <summary>GET /api/status.</summary>
-        public JsonObject Status() => Send(HttpMethod.Get, "api/status", null, null)!;
+        /// <summary>GET /api/status, giving up after <paramref name="timeout"/> if that is shorter than the usual timeout.</summary>
+        public JsonObject Status(TimeSpan? timeout = null) => Send(HttpMethod.Get, "api/status", null, null, timeout)!;
 
         /// <summary>GET /api/rooms: every room on the server.</summary>
         public JsonArray Rooms() => SendArray(HttpMethod.Get, "api/rooms");
@@ -164,14 +165,15 @@ namespace osWebRtcSas
             JsonNode.Parse(SendText(method, path, null, null)) as JsonArray ?? new JsonArray();
 
         /// <summary>Sends a request and returns the JSON object reply (null for an empty one). Throws <see cref="SasException"/>.</summary>
-        private JsonObject? Send(HttpMethod method, string path, JsonObject? body, string? bearer)
+        private JsonObject? Send(HttpMethod method, string path, JsonObject? body, string? bearer, TimeSpan? timeout = null)
         {
-            var text = SendText(method, path, body, bearer);
+            var text = SendText(method, path, body, bearer, timeout);
             return text.Length == 0 ? null : JsonNode.Parse(text) as JsonObject;
         }
 
-        private string SendText(HttpMethod method, string path, JsonObject? body, string? bearer)
+        private string SendText(HttpMethod method, string path, JsonObject? body, string? bearer, TimeSpan? timeout = null)
         {
+            using var cancel = timeout is { } limit ? new CancellationTokenSource(limit) : null;
             using var request = new HttpRequestMessage(method, path);
             if (body is not null)
             {
@@ -185,7 +187,11 @@ namespace osWebRtcSas
             HttpResponseMessage response;
             try
             {
-                response = _http.Send(request);
+                response = _http.Send(request, cancel?.Token ?? CancellationToken.None);
+            }
+            catch (OperationCanceledException) when (cancel?.IsCancellationRequested == true)
+            {
+                throw new SasException(0, $"{method} {path}: no answer within {timeout!.Value.TotalSeconds:0.#} s");
             }
             catch (Exception e) when (e is HttpRequestException or TaskCanceledException or OperationCanceledException)
             {

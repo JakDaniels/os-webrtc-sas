@@ -86,7 +86,8 @@ namespace osWebRtcSas
 
             try
             {
-                var status = _client.Status();
+                // Short: the simulator's start-up waits for this.
+                var status = _client.Status(TimeSpan.FromSeconds(3));
                 Log.Info($"{LogHeader} Using SpatialAudioServer {(string?)status["version"]} at {serverUri}");
             }
             catch (SasException e)
