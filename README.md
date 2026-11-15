@@ -54,6 +54,33 @@ channel is checked again when the viewer joins. A callee on another simulator is
 Ad-hoc conferences are refused, as by OpenSim. On an OpenSim whose core handles calls
 (`WebRtcVoiceRegionModule.MultiAgentCallsVersion`), the add-on leaves `ChatSessionRequest` to it.
 
+Things to know when trying calls:
+
+- **Group calls start muted.** The viewer turns the microphone off on joining a group (or ad-hoc) call; unmute with
+  Speak. P2P calls start unmuted. Group members are not rung: they join with Join Call in the group's IM window.
+- **Groups on a SQLite standalone.** OpenSim's groups (V2) store only in MySQL/MariaDB or PostgreSQL, but they can
+  use one alone while everything else stays on SQLite:
+
+  ```ini
+  [Groups]
+      Enabled = true
+      Module = "Groups Module V2"
+      StorageProvider = OpenSim.Data.MySQL.dll
+      ConnectionString = "Data Source=localhost;Database=opensim_groups;User ID=opensim;Password=***;Old Guids=true;SslMode=None;"
+      ServicesConnectorModule = "Groups Local Service Connector"
+      LocalService = local
+      MessagingEnabled = true
+      MessagingModule = "Groups Messaging Module V2"
+      MessageOnlineUsersOnly = true   ; without it, V2 group messaging (and so group IM) switches itself off
+  ```
+
+  and in `config-include/storage/SQLiteStandalone.ini` give `[GridUserService]` its provider,
+  `StorageProvider = "OpenSim.Data.SQLite.dll"`: the groups service also reads grid users (online status), and with
+  no provider there it pairs SQLite's `griduser.db` connection string with the MySQL driver and stops the simulator
+  at start-up ("Could not find a storage interface for the given users module"). For MariaDB, OpenSim's usual
+  settings are `max_allowed_packet = 128M` and no strict mode (`sql_mode = NO_ENGINE_SUBSTITUTION`); the groups
+  tables declare their own character set.
+
 **Status:** region and parcel voice with positions, neighbouring regions, per-person mute and volume, web users as
 NPCs, group and P2P calls (callees on the same simulator). Not yet: ringing across simulators, ad-hoc conferences.
 
