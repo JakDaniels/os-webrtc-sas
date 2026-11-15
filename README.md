@@ -29,9 +29,16 @@ their names are registered with the simulator (`RegisterGuestNames`, `GuestLastN
 
 They can also be shown in-world as **NPCs** (`WebUserAvatars`): `optional` for those that ask (SpatialAudioServer's web
 client has a "Create an NPC in-world" tick box, its load tool `--npc`), `always` for everyone (nobody listens in the
-region unseen). The NPC has the default appearance and the voice-list name, stands where the participant is in the
-room and turns with its Facing control; viewers show its white dot when it talks. It appears only while the
-participant's position is inside the room's region, and goes when the participant leaves. The module tells each room
+region unseen). The NPC has the voice-list name and copies the look of the avatars in `NpcAppearancesFrom` in turn
+(names, avatar UUIDs, or the asset UUIDs of appearance notecards saved with `osAgentSaveAppearance`, which also store
+the baked textures; without any it is a cloud); it stands where the participant is in the room and turns with its Facing control, and
+viewers show its white dot when it talks. It appears only while the participant's position is inside the room's
+region, and goes when the participant leaves. NPC ids are stable while the simulator runs (from a start-up secret, the room and the name), so a bot that rejoins
+under the same name, e.g. after a server restart, keeps its entry in viewers' voice lists; removed NPCs and guests are
+reported to the server, so viewers that missed the leave drop them.
+
+`SpatialProfile` picks the distance curve for the rooms the module creates: `outdoor` (physical fall-off, the
+server's default) or `meeting` (SL's Vivox curve: full volume to 10 m, silent from 35 m). The module tells each room
 its setting, so the web client knows whether to offer the tick box. Needs OpenSim's NPC module (`[NPC] Enabled`).
 
 **Status:** region and parcel voice with positions, neighbouring regions, per-person mute and volume, web users as

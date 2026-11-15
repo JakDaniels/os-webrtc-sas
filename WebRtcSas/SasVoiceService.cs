@@ -44,6 +44,9 @@ namespace osWebRtcSas
 
         private readonly SasClient? _client;
         private readonly int _maxParticipants;
+
+        /// <summary>The distance curve for new rooms (the server's Media:Spatial:Profiles); null = the server's default.</summary>
+        private readonly string? _spatialProfile;
         private readonly bool _messageDetails;
         private readonly System.Threading.Timer? _poseTimer;
         private readonly System.Threading.Timer? _nameTimer;
@@ -88,6 +91,7 @@ namespace osWebRtcSas
                 return;
             }
             _maxParticipants = sas.GetInt("MaxParticipantsPerRoom", 0);
+            _spatialProfile = sas.GetString("SpatialProfile", string.Empty).Trim() is { Length: > 0 } profile ? profile : null;
             _messageDetails = sas.GetBoolean("MessageDetails", false);
             _client = new SasClient(serverUri, apiKey, TimeSpan.FromSeconds(sas.GetInt("RequestTimeoutSeconds", 10)),
                 sas.GetBoolean("AcceptSelfSignedCertificate", false));
@@ -120,7 +124,9 @@ namespace osWebRtcSas
             }
             if (_webUserAvatarsMode != SasWebUserAvatars.Off)
             {
-                _webUserAvatars = new SasWebUserAvatars(_client, _webUserAvatarsMode, _guestLastName);
+                var looks = sas.GetString("NpcAppearancesFrom", string.Empty)
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                _webUserAvatars = new SasWebUserAvatars(_client, _webUserAvatarsMode, _guestLastName, looks);
                 Log.Info($"{LogHeader} Web users are shown in-world as NPCs: {_webUserAvatarsMode}");
             }
             if (_registerGuestNames || _webUserAvatars is not null)
@@ -194,7 +200,8 @@ namespace osWebRtcSas
                         _client.RemoveParticipant(oldRoom, old);
                     }
 
-                    var room = _client.EnsureRoom(roomId, roomName, spatial: true, ClientPose, _maxParticipants, _webUserAvatarsMode);
+                    var room = _client.EnsureRoom(roomId, roomName, spatial: true, ClientPose, _maxParticipants, _webUserAvatarsMode,
+                        _spatialProfile);
                     if (!string.Equals((string?)room["inWorldAvatars"], _webUserAvatarsMode, StringComparison.OrdinalIgnoreCase))
                     {
                         _client.UpdateRoom(roomId, _webUserAvatarsMode);
@@ -399,6 +406,7 @@ namespace osWebRtcSas
                 var seen = new HashSet<UUID>();
                 var seenParticipants = new HashSet<Guid>();
                 var polled = new HashSet<string>();
+                var read = new List<(string Room, System.Text.Json.Nodes.JsonArray Participants)>();
                 foreach (var room in rooms)
                 {
                     System.Text.Json.Nodes.JsonArray participants;
@@ -423,7 +431,8 @@ namespace osWebRtcSas
                             Log.Warn($"{LogHeader} Could not set WebUserAvatars on room {room}: {e.Message}");
                         }
                     }
-                    _webUserAvatars?.Update(room, participants, seenParticipants);
+                    read.Add((room, participants));
+                    SasWebUserAvatars.AddIds(participants, seenParticipants);
                     if (!_registerGuestNames)
                     {
                         continue;
@@ -454,7 +463,15 @@ namespace osWebRtcSas
                     }
                 }
 
-                _webUserAvatars?.Sweep(polled, rooms, seenParticipants);
+                // NPCs of participants that left go first, so a rejoining participant can have its NPC id back.
+                if (_webUserAvatars is { } avatars)
+                {
+                    avatars.Sweep(polled, rooms, seenParticipants);
+                    foreach (var (room, participants) in read)
+                    {
+                        avatars.Update(room, participants);
+                    }
+                }
 
                 // Gone from a room we could read, or from a room we no longer have sessions in.
                 foreach (var (uuid, entry) in _guestNames)
@@ -466,6 +483,11 @@ namespace osWebRtcSas
                             scene.RequestModuleInterface<IUserManagement>()?.RemoveUser(uuid);
                         }
                         _guestNames.TryRemove(uuid, out _);
+                        if (polled.Contains(entry.Room))
+                        {
+                            // Viewers that missed its leave (the server restarted) drop it from their lists.
+                            ReportGone(entry.Room, uuid.Guid);
+                        }
                     }
                 }
             }
@@ -476,6 +498,18 @@ namespace osWebRtcSas
             finally
             {
                 System.Threading.Volatile.Write(ref _registeringNames, 0);
+            }
+        }
+
+        private void ReportGone(string room, Guid key)
+        {
+            try
+            {
+                _client?.ViewersGone(room, [key]);
+            }
+            catch (SasException e)
+            {
+                Log.Debug($"{LogHeader} Could not report {key} gone from {room}: {e.Message}");
             }
         }
 

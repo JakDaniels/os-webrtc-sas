@@ -62,17 +62,33 @@ namespace osWebRtcSas
         /// Gets or creates the room with this external id (PUT /api/rooms/by-external/{id}). The settings only apply
         /// when it is created; the reply shows the room as it is.
         /// </summary>
-        public JsonObject EnsureRoom(string externalId, string name, bool spatial, string clientPose, int maxParticipants, string inWorldAvatars)
+        public JsonObject EnsureRoom(string externalId, string name, bool spatial, string clientPose, int maxParticipants, string inWorldAvatars,
+            string? spatialProfile)
         {
             var body = new JsonObject
             {
                 ["name"] = name, ["spatial"] = spatial, ["clientPose"] = clientPose, ["inWorldAvatars"] = inWorldAvatars,
             };
+            if (spatialProfile is not null)
+            {
+                body["spatialProfile"] = spatialProfile;
+            }
             if (maxParticipants > 0)
             {
                 body["maxParticipants"] = maxParticipants;
             }
             return Send(HttpMethod.Put, $"api/rooms/by-external/{Escape(externalId)}", body, null)!;
+        }
+
+        /// <summary>Tells the server these viewer keys (NPCs, guests) have gone, so viewers that missed it drop them.</summary>
+        public void ViewersGone(string roomExternalId, IReadOnlyList<Guid> keys)
+        {
+            var list = new JsonArray();
+            foreach (var key in keys)
+            {
+                list.Add(key.ToString());
+            }
+            Send(HttpMethod.Post, $"api/rooms/by-external/{Escape(roomExternalId)}/viewers-gone", new JsonObject { ["keys"] = list }, null);
         }
 
         /// <summary>Sets whether this simulator shows the room's web users in-world (PATCH /api/rooms/by-external/{id}).</summary>

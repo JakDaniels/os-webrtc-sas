@@ -25,9 +25,19 @@ namespace osWebRtcSas
     /// Called from the voice service's room poll, once a second.
     /// </summary>
     /// <remarks>
-    /// The NPC gets the default appearance and the name "{display name} {GuestLastName}", registered with user
-    /// management for viewers' name lookups. It appears only when the participant's position is inside the room's
-    /// region. NPCs are not kept across simulator restarts: a participant still in the room gets a new one.
+    /// <para>The NPC is named "{display name} {GuestLastName}", registered with user management for viewers' name
+    /// lookups, and looks like the avatars in <c>NpcAppearancesFrom</c> in turn (the default "cloud" without them). It
+    /// appears only when the participant's position is inside the room's region. NPCs are not kept across simulator
+    /// restarts: a participant still in the room gets a new one.</para>
+    /// <para>NPC ids are stable while the simulator runs: derived from a secret made at start-up, the room, the name
+    /// and a slot number, so a participant that joins again under the same name (a bot after a server restart) gets
+    /// its old id, and viewers keep one list entry for it; the secret keeps the ids from being guessed. (They are
+    /// version 3, name-based UUIDs, so they cannot equal an account's random version 4 UUID.) A removed NPC is
+    /// reported to the server, so viewers that missed the leave drop it.</para>
+    /// <para>Looks (<c>NpcAppearancesFrom</c>, used in turn): an avatar's name or UUID copies that avatar, its current
+    /// look while it is in a region here, else its stored appearance (whose baked textures may have expired: a cloud);
+    /// a notecard's asset UUID loads an appearance saved with <c>osAgentSaveAppearance</c>, which also stores the
+    /// baked textures, so it keeps working.</para>
     /// </remarks>
     internal sealed class SasWebUserAvatars
     {
@@ -40,6 +50,14 @@ namespace osWebRtcSas
 
         private readonly SasClient _client;
         private readonly string _lastName;
+        private readonly string[] _appearancesFrom;
+        private int _nextAppearance;
+
+        /// <summary>Mixed into NPC ids so they cannot be worked out from the room and name.</summary>
+        private readonly string _secret = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
+
+        /// <summary>Appearances loaded from notecards, by asset id (they do not change).</summary>
+        private readonly ConcurrentDictionary<UUID, OpenMetaverse.StructuredData.OSDMap> _notecards = new();
 
         /// <summary>Participant id → its NPC.</summary>
         private readonly ConcurrentDictionary<Guid, Npc> _npcs = new();
@@ -49,11 +67,26 @@ namespace osWebRtcSas
 
         private bool _npcModuleMissingLogged;
 
-        public SasWebUserAvatars(SasClient client, string mode, string lastName)
+        /// <param name="appearancesFrom">Avatar names ("First Last") or UUIDs whose looks NPCs copy, in turn.</param>
+        public SasWebUserAvatars(SasClient client, string mode, string lastName, IEnumerable<string> appearancesFrom)
         {
             _client = client;
             Mode = mode;
             _lastName = lastName;
+            _appearancesFrom = System.Linq.Enumerable.ToArray(appearancesFrom);
+        }
+
+        /// <summary>The ids of the web and bot participants in a room listing (not SL avatars).</summary>
+        public static void AddIds(JsonArray participants, HashSet<Guid> into)
+        {
+            foreach (var p in participants)
+            {
+                if (p is JsonObject participant && Guid.TryParse((string?)participant["id"], out var id)
+                    && !UUID.TryParse((string?)participant["externalId"] ?? string.Empty, out _))
+                {
+                    into.Add(id);
+                }
+            }
         }
 
         /// <summary><see cref="Off"/>, <see cref="Optional"/> or <see cref="Always"/>.</summary>
@@ -69,7 +102,7 @@ namespace osWebRtcSas
         };
 
         /// <summary>Brings the room's NPCs in line with its participants (as just read from the server).</summary>
-        public void Update(string room, JsonArray participants, HashSet<Guid> seen)
+        public void Update(string room, JsonArray participants)
         {
             var scene = SceneOf(room);
             foreach (var p in participants)
@@ -79,15 +112,18 @@ namespace osWebRtcSas
                 {
                     continue; // an SL avatar (its viewer's own body), or not readable
                 }
-                seen.Add(id);
                 var wanted = Mode == Always || (Mode == Optional && (bool?)participant["inWorldAvatar"] == true);
+                Guid.TryParse((string?)participant["avatarId"], out var avatarId);
                 if (!wanted || scene is null)
                 {
-                    Remove(id);
+                    if (Remove(id) is { } removed)
+                    {
+                        Tie(room, id, Guid.Empty); // still in the room: viewers know it by its participant id again
+                        Gone(room, removed);
+                    }
                     continue;
                 }
                 var pose = PoseOf(participant);
-                Guid.TryParse((string?)participant["avatarId"], out var avatarId);
                 if (_npcs.TryGetValue(id, out var npc) && npc.Scene.TryGetScenePresence(npc.Id, out ScenePresence presence))
                 {
                     if (avatarId != npc.Id.Guid)
@@ -112,9 +148,10 @@ namespace osWebRtcSas
         {
             foreach (var (id, npc) in _npcs)
             {
-                if ((polled.Contains(npc.Room) && !seen.Contains(id)) || !rooms.Contains(npc.Room))
+                var left = polled.Contains(npc.Room) && !seen.Contains(id);
+                if ((left || !rooms.Contains(npc.Room)) && Remove(id) is { } removed && left)
                 {
-                    Remove(id);
+                    Gone(npc.Room, removed);
                 }
             }
             foreach (var id in _outside.Keys)
@@ -146,7 +183,8 @@ namespace osWebRtcSas
                 }
                 return;
             }
-            var npcId = npcs.CreateNPC(name, _lastName, local, UUID.Zero, false, scene, new AvatarAppearance());
+            var wantedId = StableId(room, name);
+            var npcId = npcs.CreateNPC(name, _lastName, local, wantedId, UUID.Zero, string.Empty, UUID.Zero, false, scene, NextAppearance(scene));
             if (npcId == UUID.Zero)
             {
                 Log.Warn($"{LogHeader} Could not create an NPC for {name} ({id}) in {scene.RegionInfo.RegionName}");
@@ -178,11 +216,122 @@ namespace osWebRtcSas
             }
         }
 
-        private void Remove(Guid participantId)
+        /// <summary>Tells the server the NPC has gone, so viewers that missed it (a server restart) drop it.</summary>
+        private void Gone(string room, UUID npcId)
+        {
+            try
+            {
+                _client.ViewersGone(room, [npcId.Guid]);
+            }
+            catch (SasException e)
+            {
+                Log.Debug($"{LogHeader} Could not report NPC {npcId} gone from {room}: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// The NPC id for a participant called <paramref name="name"/> in <paramref name="room"/>: the same each time,
+        /// unless another participant of that name has it now (then the next slot's).
+        /// </summary>
+        private UUID StableId(string room, string name)
+        {
+            for (var slot = 0; ; slot++)
+            {
+                using var md5 = System.Security.Cryptography.MD5.Create();
+                var hash = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes($"os-webrtc-sas npc|{_secret}|{room}|{name}|{slot}"));
+                hash[6] = (byte)((hash[6] & 0x0F) | 0x30); // a version 3 (name-based) UUID
+                hash[8] = (byte)((hash[8] & 0x3F) | 0x80);
+                var id = new UUID(hash, 0);
+                var taken = false;
+                foreach (var npc in _npcs.Values)
+                {
+                    taken |= npc.Id == id;
+                }
+                if (!taken)
+                {
+                    return id;
+                }
+            }
+        }
+
+        /// <summary>The next look from NpcAppearancesFrom (round robin): the avatar's own if it is in a region here, else
+        /// its stored appearance; the default (a cloud) without one.</summary>
+        private AvatarAppearance NextAppearance(Scene scene)
+        {
+            if (_appearancesFrom.Length == 0)
+            {
+                return new AvatarAppearance();
+            }
+            var from = _appearancesFrom[(int)((uint)System.Threading.Interlocked.Increment(ref _nextAppearance) - 1) % _appearancesFrom.Length];
+            UUID user;
+            if (UUID.TryParse(from, out user) && Notecard(scene, user) is { } saved)
+            {
+                var appearance = new AvatarAppearance();
+                appearance.Unpack(saved);
+                return appearance;
+            }
+            if (!UUID.TryParse(from, out user))
+            {
+                var names = from.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                var account = names.Length == 2 ? scene.UserAccountService?.GetUserAccount(scene.RegionInfo.ScopeID, names[0], names[1]) : null;
+                if (account is null)
+                {
+                    Log.Warn($"{LogHeader} NpcAppearancesFrom: no avatar called '{from}': using the default appearance");
+                    return new AvatarAppearance();
+                }
+                user = account.PrincipalID;
+            }
+            foreach (var s in SceneManager.Instance.Scenes)
+            {
+                if (s.TryGetScenePresence(user, out ScenePresence presence) && !presence.IsChildAgent && !presence.IsNPC)
+                {
+                    return new AvatarAppearance(presence.Appearance, true);
+                }
+            }
+            if (scene.AvatarService?.GetAppearance(user) is { } stored)
+            {
+                return stored;
+            }
+            Log.Warn($"{LogHeader} NpcAppearancesFrom: no appearance stored for '{from}': using the default appearance");
+            return new AvatarAppearance();
+        }
+
+        /// <summary>The appearance saved in the notecard with this asset id (osAgentSaveAppearance), or null if it is not one.</summary>
+        private OpenMetaverse.StructuredData.OSDMap? Notecard(Scene scene, UUID assetId)
+        {
+            if (_notecards.TryGetValue(assetId, out var cached))
+            {
+                return cached;
+            }
+            var asset = scene.AssetService?.Get(assetId.ToString());
+            if (asset is null || asset.Type != (sbyte)AssetType.Notecard)
+            {
+                return null; // an avatar's UUID
+            }
+            try
+            {
+                var text = string.Join("\n", SLUtil.ParseNotecardToArray(asset.Data));
+                if (OpenMetaverse.StructuredData.OSDParser.DeserializeLLSDXml(text) is OpenMetaverse.StructuredData.OSDMap map)
+                {
+                    _notecards[assetId] = map;
+                    return map;
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Warn($"{LogHeader} NpcAppearancesFrom: notecard {assetId} is not a saved appearance ({e.Message})");
+                return null;
+            }
+            Log.Warn($"{LogHeader} NpcAppearancesFrom: notecard {assetId} is not a saved appearance");
+            return null;
+        }
+
+        /// <summary>Removes the participant's NPC, if it has one; returns its id.</summary>
+        private UUID? Remove(Guid participantId)
         {
             if (!_npcs.TryRemove(participantId, out var npc))
             {
-                return;
+                return null;
             }
             npc.Scene.RequestModuleInterface<INPCModule>()?.DeleteNPC(npc.Id, npc.Scene);
             foreach (var s in SceneManager.Instance.Scenes)
@@ -190,6 +339,7 @@ namespace osWebRtcSas
                 s.RequestModuleInterface<IUserManagement>()?.RemoveUser(npc.Id);
             }
             Log.Info($"{LogHeader} Removed NPC {npc.Id} of participant {participantId} from {npc.Scene.RegionInfo.RegionName}");
+            return npc.Id;
         }
 
         /// <summary>The scene of a room's region ("region:{id}" or "parcel:{id}:{parcel}"), if it is on this simulator.</summary>

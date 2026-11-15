@@ -28,6 +28,11 @@
     ; Room size for new rooms; 0 = the server's default (Limits:MaxParticipantsPerRoom, 32).
     MaxParticipantsPerRoom = 0
 
+    ; The distance curve for new rooms, one of the server's Media:Spatial:Profiles: "outdoor" (physical fall-off,
+    ; the server's default) or "meeting" (SL's Vivox settings: full volume to 10 m, silent from 35 m). Empty: the
+    ; server's default. Only applies when a room is created (delete a room on the server to have it made again).
+    SpatialProfile =
+
     ; How often (milliseconds) avatar positions go to the server, for avatars that moved; 0 = only when joining.
     ; The viewer also reports its own position and camera over WebRTC, which the server uses near this one.
     PositionUpdateMilliseconds = 250
@@ -42,6 +47,12 @@
     ;   off: never; optional: those that ask (the web client's "Create an NPC in-world" tick box, the load tool's
     ;   --npc); always: all of them, so nobody listens in the region unseen. Needs [NPC] Enabled = true.
     WebUserAvatars = off
+
+    ; Their looks, used in turn (a comma-separated list). Each is an avatar ("First Last" or its UUID), copied while it
+    ; is in a region here (otherwise its stored appearance, which may show as a cloud once its baked textures expire),
+    ; or the asset UUID of a notecard saved with osAgentSaveAppearance (keeps the baked textures: always works).
+    ; Empty: OpenSim's default appearance, which viewers show as a cloud.
+    NpcAppearancesFrom =
 
     ; Log each provision request (without the SDP) at debug level.
     MessageDetails = false
