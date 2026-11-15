@@ -16,6 +16,7 @@ gateway, this one talks to SpatialAudioServer's HTTP API:
 | the viewer's ICE candidates | `POST /signal/{participant}/ice` |
 | the avatar moving | `POST /api/rooms/by-external/{room}/poses` (every avatar in the room at once) |
 | logout, leaving the region | participant removed |
+| a group or P2P call (`multiagent`) | non-spatial room `call:{grid}:{IM session id}`, deleted when the call ends |
 
 The join and session tokens stay in the simulator; viewers only see a viewer session id. Their audio goes straight to
 SpatialAudioServer over WebRTC (UDP).
@@ -41,8 +42,19 @@ reported to the server, so viewers that missed the leave drop them.
 server's default) or `meeting` (SL's Vivox curve: full volume to 10 m, silent from 35 m). The module tells each room
 its setting, so the web client knows whether to offer the tick box. Needs OpenSim's NPC module (`[NPC] Enabled`).
 
+### Group and P2P calls
+
+OpenSim's own `WebRtcVoiceRegionModule` cannot start these calls yet: it answers the viewer's `call` request without
+the voice channel and never rings a P2P callee (a core patch for OpenSim is written up in
+[`core-patches/`](core-patches/)). So this add-on includes a region module, `SasCallsModule`, that answers `ChatSessionRequest`
+in its place (`Calls = true`): `call` gets the channel (the IM session id) if the avatar may use it (a member of the
+group; for P2P, the session must be theirs with another avatar), and `start p2p voice` also rings the callee. The
+channel is checked again when the viewer joins. A callee on another simulator is not rung yet (they can call back).
+Ad-hoc conferences are refused, as by OpenSim. On an OpenSim whose core handles calls
+(`WebRtcVoiceRegionModule.MultiAgentCallsVersion`), the add-on leaves `ChatSessionRequest` to it.
+
 **Status:** region and parcel voice with positions, neighbouring regions, per-person mute and volume, web users as
-NPCs. Not yet: group, ad-hoc and P2P calls.
+NPCs, group and P2P calls (callees on the same simulator). Not yet: ringing across simulators, ad-hoc conferences.
 
 ## Building
 

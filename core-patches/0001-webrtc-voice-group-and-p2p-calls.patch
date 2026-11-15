@@ -1,0 +1,214 @@
+--- a/OpenSim/Addons/os-webrtc-janus/WebRtcVoiceRegionModule/WebRtcVoiceRegionModule.cs	2026-11-15 20:55:36.994563410 +0000
++++ b/OpenSim/Addons/os-webrtc-janus/WebRtcVoiceRegionModule/WebRtcVoiceRegionModule.cs	2026-11-15 21:15:09.795921729 +0000
+@@ -36,6 +36,7 @@
+ using OpenSim.Region.Framework.Scenes;
+ using OpenSim.Server.Base;
+ using System;
++using System.Collections.Concurrent;
+ using System.Collections.Generic;
+ using System.IO;
+ using System.Linq;
+@@ -68,6 +69,21 @@
+         private static readonly ILog m_log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
+         private static readonly string LogHeader = "[REGION WEBRTC VOICE]";
+ 
++        /// <summary>
++        /// This module answers ChatSessionRequest "call" with the session's voice channel and rings P2P callees, so
++        /// group and P2P voice calls work. Add-ons that supplied this themselves on older versions look for this field
++        /// and leave ChatSessionRequest to this module when it is there. Bump it if that behaviour changes.
++        /// </summary>
++        public const int MultiAgentCallsVersion = 1;
++
++        // EMultiAgentChatSessionType::P2P_CHAT_SESSION in the viewer
++        private const int P2P_CHAT_SESSION = 2;
++
++        // Viewer session id -> the call channel it was provisioned for (group and P2P calls), so "call" can tell
++        // whether the other party of a P2P call is already in it. Entries whose viewer session has gone are dropped
++        // when looked at.
++        private static readonly ConcurrentDictionary<string, UUID> m_callChannels = new();
++
+         private static byte[] llsdUndefAnswerBytes = Util.UTF8.GetBytes("<llsd><undef /></llsd>");
+         private static byte[] llsdEmpyAnswerBytes = Util.UTF8.GetBytes("<llsd><array /></llsd>");
+         private bool _MessageDetails = false;
+@@ -589,9 +605,24 @@
+                             return;
+                         }
+ 
++                        // A group or P2P call: the channel is the IM session id that "call" handed out. Check it
++                        // again here, so a viewer cannot join a channel it was not given.
++                        string channel = map.TryGetString("channel", out string ch) ? ch :
++                                         map.TryGetString("channel_id", out ch) ? ch : string.Empty;
++                        if (!UUID.TryParse(channel, out UUID channelID) || !MayUseCallChannel(scene, agentID, channelID, out _))
++                        {
++                            m_log.Debug($"{LogHeader}[ProvisionVoice]: agent {agentID} may not use call channel '{channel}'");
++                            response.RawBuffer = llsdUndefAnswerBytes;
++                            response.StatusCode = (int)HttpStatusCode.Forbidden;
++                            return;
++                        }
++                        // The viewer sends "channel"; back ends that read "channel_id" find it there too.
++                        map["channel_id"] = channel;
++
+                         vSession = m_nonSpatialVoiceService.CreateViewerSession(map, agentID, scene.RegionInfo.RegionID);
+                         if(vSession != null)
+                         {
++                            m_callChannels[vSession.ViewerSessionID] = channelID;
+                             vSession.Flags = IVoiceViewerSession.VFlags.IsAdmin;
+                             VoiceViewerSession.AddViewerSession(vSession);
+                             map["gridhash"] = gridHash;
+@@ -749,13 +780,37 @@
+                 case "decline p2p voice":
+                 case "decline invitation":
+                 case "accept invitation":
+-                case "call":
+                 case "invite":
+                 case "mute update":
+                 case "session update":
+                     response.StatusCode = (int)HttpStatusCode.OK;
+                     break;
+ 
++                // Starting or joining a group or P2P call: the viewer needs the voice channel in
++                // "voice_credentials" (LLVoiceChannelGroup::voiceCallCapCoro), or it ends the call with
++                // "invalid credentials". The channel is the IM session id.
++                case "call":
++                    if (!MayUseCallChannel(scene, agentID, sessionID, out string callName))
++                    {
++                        m_log.Debug($"{LogHeader} ChatSessionRequest: {sp.Name} may not call on session {sessionID}");
++                        response.StatusCode = (int)HttpStatusCode.Forbidden; // the viewer reports "voice not allowed"
++                        break;
++                    }
++                    m_log.Debug($"{LogHeader} ChatSessionRequest: {sp.Name} joins the call {callName} ({sessionID})");
++                    response.RawBuffer = OSDParser.SerializeLLSDXmlToBytes(new OSDMap
++                    {
++                        { "voice_credentials", CallChannelInfo(sessionID, null) }
++                    });
++                    response.StatusCode = (int)HttpStatusCode.OK;
++
++                    // A P2P call rings the other party, unless they are in it already (then they called, and this
++                    // is them being answered). Ringing belongs here, not to "start p2p voice": a viewer whose IM
++                    // window with the other avatar is already open sends only "call".
++                    UUID otherParty = new(sessionID.ulonga ^ agentID.ulonga, sessionID.ulongb ^ agentID.ulongb);
++                    if (!IsGroupSession(scene, sessionID) && !IsInCall(sessionID, otherParty))
++                        RingP2PCallee(sp, otherParty, sessionID);
++                    break;
++
+                 // viewer only does anything if the response body
+                 // is an ARRAY, and merely logs otherwise. Answer an explicit empty array: this
+                 // is fired automatically after every successful "start p2p voice" when the
+@@ -824,6 +879,7 @@
+                                 agentID);
+ 
+                         response.StatusCode = (int)HttpStatusCode.OK;
++                        // The viewer follows this with "call", which rings the other party.
+                     }
+                     break;
+                 default:
+@@ -833,6 +889,109 @@
+         }
+ 
+         /// <summary>
++        /// Whether the agent may use the call channel (an IM session id): a group's call (the session id is the
++        /// group id; the agent must be a member) or a P2P call (the session id is the two agents' ids XORed, so XORed
++        /// with the agent's own id it must give another avatar: a third person who computes A^B gets nothing).
++        /// </summary>
++        private static bool MayUseCallChannel(Scene scene, UUID agentID, UUID channelID, out string name)
++        {
++            IGroupsModule groups = scene.RequestModuleInterface<IGroupsModule>();
++            GroupMembershipData membership = groups?.GetMembershipData(channelID, agentID);
++            if (membership is not null)
++            {
++                name = membership.GroupName;
++                return true;
++            }
++
++            UUID otherID = new(channelID.ulonga ^ agentID.ulonga, channelID.ulongb ^ agentID.ulongb);
++            name = otherID.ToString();
++            if (otherID.IsZero() || otherID.Equals(agentID))
++                return false;
++
++            foreach (Scene s in SceneManager.Instance.Scenes)
++            {
++                if (s.TryGetScenePresence(otherID, out ScenePresence other) && !other.IsNPC)
++                {
++                    name = other.Name;
++                    return true;
++                }
++            }
++            var account = scene.UserAccountService?.GetUserAccount(scene.RegionInfo.ScopeID, otherID);
++            if (account is null)
++                return false;
++            name = account.Name;
++            return true;
++        }
++
++        private static bool IsGroupSession(Scene scene, UUID sessionID)
++        {
++            IGroupsModule groups = scene.RequestModuleInterface<IGroupsModule>();
++            return groups?.GetGroupRecord(sessionID) is not null;
++        }
++
++        /// <summary>Whether the agent has a live voice session for this call channel (on this simulator).</summary>
++        private static bool IsInCall(UUID channelID, UUID agentID)
++        {
++            foreach (KeyValuePair<string, UUID> entry in m_callChannels)
++            {
++                if (!VoiceViewerSession.TryGetViewerSession(entry.Key, out IVoiceViewerSession session))
++                {
++                    m_callChannels.TryRemove(entry.Key, out _);
++                    continue;
++                }
++                if (entry.Value.Equals(channelID) && session.AgentId.Equals(agentID))
++                    return true;
++            }
++            return false;
++        }
++
++        /// <summary>A call's voice channel as the viewer takes it ("voice_credentials", or a voice invitation's "voice").</summary>
++        private static OSDMap CallChannelInfo(UUID sessionID, int? invitationType)
++        {
++            OSDMap info = new()
++            {
++                { "channel_uri", sessionID.ToString() },
++                { "channel_credentials", string.Empty },
++                { "voice_server_type", "webrtc" }
++            };
++            if (invitationType.HasValue)
++                info["invitation_type"] = invitationType.Value;
++            return info;
++        }
++
++        /// <summary>
++        /// Rings the other party of a P2P call: a ChatterBoxInvitation carrying the voice channel, which the viewer
++        /// shows as an incoming call and joins on accepting. Only for callees on this simulator; others are not rung
++        /// (they would need the invitation passed on through the grid, e.g. as an instant message turned back into
++        /// this event by the callee's simulator).
++        /// </summary>
++        private static void RingP2PCallee(ScenePresence caller, UUID calleeID, UUID sessionID)
++        {
++            foreach (Scene s in SceneManager.Instance.Scenes)
++            {
++                if (s.TryGetScenePresence(calleeID, out ScenePresence callee) && !callee.IsChildAgent && !callee.IsNPC)
++                {
++                    OSDMap invitation = new()
++                    {
++                        { "message", "ChatterBoxInvitation" },
++                        { "body", new OSDMap
++                            {
++                                { "session_id", sessionID },
++                                { "session_name", caller.Name },
++                                { "from_id", caller.UUID },
++                                { "from_name", caller.Name },
++                                { "voice", CallChannelInfo(sessionID, P2P_CHAT_SESSION) }
++                            }
++                        }
++                    };
++                    s.RequestModuleInterface<IEventQueue>()?.Enqueue((OSD)invitation, calleeID);
++                    return;
++                }
++            }
++            m_log.Debug($"{LogHeader} P2P call from {caller.Name} to {calleeID}: callee not on this simulator, not rung");
++        }
++
++        /// <summary>
+         /// Convert the LLSDXml body of the request to an OSDMap for easier handling.
+         /// Also logs the request if message details is enabled.
+         /// </summary>

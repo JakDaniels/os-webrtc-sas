@@ -27,8 +27,9 @@ namespace osWebRtcSas
     /// participant, and the viewer's SDP offer and ICE candidates passed through the server's signalling endpoints.
     /// </summary>
     /// <remarks>
-    /// First milestone: region and parcel voice (<c>channel_type: local</c>) only; group, ad-hoc and P2P calls
-    /// (<c>multiagent</c>) are refused. Configuration: <c>[SasWebRtcVoice]</c>, see os-webrtc-sas.ini.example.
+    /// Region and parcel voice (<c>channel_type: local</c>), and group and P2P calls (<c>multiagent</c>, with
+    /// <see cref="SasCallsModule"/>: a non-spatial room per call, removed when the last person leaves); ad-hoc
+    /// conferences are refused. Configuration: <c>[SasWebRtcVoice]</c>, see os-webrtc-sas.ini.example.
     /// </remarks>
     public class SasVoiceService : IWebRtcVoiceService
     {
@@ -44,6 +45,9 @@ namespace osWebRtcSas
 
         private readonly SasClient? _client;
         private readonly int _maxParticipants;
+
+        /// <summary>Group and P2P calls (multiagent channels) are taken.</summary>
+        private readonly bool _calls;
 
         /// <summary>The distance curve for new rooms (the server's Media:Spatial:Profiles); null = the server's default.</summary>
         private readonly string? _spatialProfile;
@@ -91,6 +95,7 @@ namespace osWebRtcSas
                 return;
             }
             _maxParticipants = sas.GetInt("MaxParticipantsPerRoom", 0);
+            _calls = sas.GetBoolean("Calls", true);
             _spatialProfile = sas.GetString("SpatialProfile", string.Empty).Trim() is { Length: > 0 } profile ? profile : null;
             _messageDetails = sas.GetBoolean("MessageDetails", false);
             _client = new SasClient(serverUri, apiKey, TimeSpan.FromSeconds(sas.GetInt("RequestTimeoutSeconds", 10)),
@@ -152,9 +157,9 @@ namespace osWebRtcSas
                 return null;
             }
             var channelType = request.TryGetString("channel_type", out var type) ? type : string.Empty;
-            if (channelType != "local")
+            if (channelType != "local" && !(channelType == "multiagent" && _calls))
             {
-                Log.Info($"{LogHeader} {channelType} voice (group, ad-hoc and P2P calls) is not supported yet; agent {agentId}");
+                Log.Info($"{LogHeader} {channelType} voice is not supported{(channelType == "multiagent" ? " (Calls = false)" : "")}; agent {agentId}");
                 return null;
             }
             var session = new SasViewerSession(this, regionId, agentId);
@@ -191,8 +196,30 @@ namespace osWebRtcSas
                     {
                         return Failed("region not found");
                     }
-                    var (roomId, roomName) = RoomFor(scene, request);
+                    var isCall = request.TryGetString("channel_type", out var channelType) && channelType == "multiagent";
+                    string roomId, roomName;
+                    if (isCall)
+                    {
+                        // The channel the "call" request handed out (an IM session id); checked again, so it cannot be
+                        // used without being allowed it.
+                        var channelText = request.TryGetString("channel", out var c) ? c : request.TryGetString("channel_id", out c) ? c : string.Empty;
+                        if (!UUID.TryParse(channelText, out var channel) || SasCalls.Access(scene, agentId, channel) is not { } call)
+                        {
+                            Log.Info($"{LogHeader} Agent {agentId} may not join call channel '{channelText}'");
+                            return Failed("not allowed in that call");
+                        }
+                        roomId = SasCalls.RoomFor(request.TryGetString("gridhash", out var grid) ? grid : string.Empty, channel);
+                        roomName = call.Kind == CallKind.Group ? $"Group call: {call.Name}" : "P2P call";
+                    }
+                    else
+                    {
+                        (roomId, roomName) = RoomFor(scene, request);
+                    }
                     var (displayName, pose) = AvatarOf(scene, agentId);
+                    if (isCall)
+                    {
+                        pose = null; // calls are not spatial
+                    }
 
                     // Moving to another room (e.g. into a parcel with its own channel) on the same connection: leave the old one.
                     if (session.ParticipantId is { } old && session.RoomExternalId is { } oldRoom && oldRoom != roomId)
@@ -200,14 +227,15 @@ namespace osWebRtcSas
                         _client.RemoveParticipant(oldRoom, old);
                     }
 
-                    var room = _client.EnsureRoom(roomId, roomName, spatial: true, ClientPose, _maxParticipants, _webUserAvatarsMode,
-                        _spatialProfile);
+                    var room = isCall
+                        ? _client.EnsureRoom(roomId, roomName, spatial: false, "none", _maxParticipants, SasWebUserAvatars.Off, null)
+                        : _client.EnsureRoom(roomId, roomName, spatial: true, ClientPose, _maxParticipants, _webUserAvatarsMode, _spatialProfile);
                     if (!string.Equals((string?)room["inWorldAvatars"], _webUserAvatarsMode, StringComparison.OrdinalIgnoreCase))
                     {
                         _client.UpdateRoom(roomId, _webUserAvatarsMode);
                     }
                     _avatarSettingSent[roomId] = true;
-                    if ((string?)room["clientPose"] is { } roomPose && !string.Equals(roomPose, ClientPose, StringComparison.OrdinalIgnoreCase)
+                    if (!isCall && (string?)room["clientPose"] is { } roomPose && !string.Equals(roomPose, ClientPose, StringComparison.OrdinalIgnoreCase)
                         && _roomsChecked.TryAdd(roomId, true))
                     {
                         Log.Warn($"{LogHeader} Room {roomId} on the server is clientPose '{roomPose}', not '{ClientPose}' (it was made " +
@@ -216,6 +244,14 @@ namespace osWebRtcSas
                     var (participantId, joinToken) = _client.AddParticipant(roomId, displayName, agentId.ToString(), pose);
                     var (answer, sessionToken) = _client.Offer(participantId, joinToken, offer);
 
+                    if (session.RoomExternalId is { } previous && session.ParticipantId is not null && SasCalls.ChannelOf(previous) is { } left)
+                    {
+                        SasCalls.Left(left, agentId);
+                    }
+                    if (SasCalls.ChannelOf(roomId) is { } joined)
+                    {
+                        SasCalls.Joined(joined, agentId);
+                    }
                     session.RoomExternalId = roomId;
                     session.ParticipantId = participantId;
                     session.SessionToken = sessionToken;
@@ -324,7 +360,7 @@ namespace osWebRtcSas
                 var byRoom = new Dictionary<string, List<(SasViewerSession Session, SasPose Pose)>>();
                 foreach (var session in _sessions.Values)
                 {
-                    if (session.ParticipantId is null || session.RoomExternalId is not { } room
+                    if (session.ParticipantId is null || session.RoomExternalId is not { } room || SasCalls.IsCallRoom(room)
                         || !SceneManager.Instance.TryGetScene(session.RegionId, out var scene)
                         || AvatarOf(scene, session.AgentId).Pose is not { } pose)
                     {
@@ -535,10 +571,19 @@ namespace osWebRtcSas
                 }
                 session.ParticipantId = null;
                 session.SessionToken = null;
+                if (SasCalls.ChannelOf(room) is { } channel)
+                {
+                    SasCalls.Left(channel, session.AgentId);
+                }
                 try
                 {
                     _client.RemoveParticipant(room, participantId);
                     Log.Info($"{LogHeader} Left voice room {room} ({reason}): agent {session.AgentId}");
+                    if (SasCalls.IsCallRoom(room) && _client.Participants(room).Count == 0)
+                    {
+                        _client.DeleteRoom(room); // the call is over
+                        Log.Info($"{LogHeader} Call {room} ended");
+                    }
                 }
                 catch (SasException e)
                 {

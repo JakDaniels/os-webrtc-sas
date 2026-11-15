@@ -27,6 +27,7 @@
   <Reference name="WebRtcVoice"/>
 
   <Reference name="Nini"/>
+  <Reference name="Mono.Addins"/>
   <Reference name="log4net"/>
 
   <Files>

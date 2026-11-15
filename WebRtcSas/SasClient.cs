@@ -144,6 +144,18 @@ namespace osWebRtcSas
             return unknown;
         }
 
+        /// <summary>Deletes a room (404 is not an error).</summary>
+        public void DeleteRoom(string externalId)
+        {
+            try
+            {
+                Send(HttpMethod.Delete, $"api/rooms/by-external/{Escape(externalId)}", null, null);
+            }
+            catch (SasException e) when (e.Status == (int)HttpStatusCode.NotFound)
+            {
+            }
+        }
+
         /// <summary>Removes a participant; true if it was there (404 is not an error: it may have gone already).</summary>
         public bool RemoveParticipant(string roomExternalId, Guid participantId)
         {

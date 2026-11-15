@@ -7,7 +7,7 @@
     ; capabilities and checks estate and parcel permissions; os-webrtc-sas is the back end it hands requests to.
     Enabled = true
     SpatialVoiceService = WebRtcSas.dll:SasVoiceService
-    ; Group, ad-hoc and P2P calls are not supported yet; they are refused.
+    ; Group and P2P calls (see Calls below); ad-hoc conferences are refused.
     NonSpatialVoiceService = WebRtcSas.dll:SasVoiceService
     MessageDetails = false
 
@@ -53,6 +53,12 @@
     ; or the asset UUID of a notecard saved with osAgentSaveAppearance (keeps the baked textures: always works).
     ; Empty: OpenSim's default appearance, which viewers show as a cloud.
     NpcAppearancesFrom =
+
+    ; Group and P2P voice calls: each call gets a non-spatial room on the server, removed when it ends. OpenSim's own
+    ; WebRtcVoiceRegionModule cannot start these calls yet (see the README), so this module answers the viewer's
+    ; ChatSessionRequest in its place, unless the running OpenSim handles calls itself. A P2P callee is rung only if
+    ; they are on this simulator.
+    Calls = true
 
     ; Log each provision request (without the SDP) at debug level.
     MessageDetails = false
