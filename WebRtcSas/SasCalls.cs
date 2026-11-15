@@ -266,8 +266,13 @@ namespace osWebRtcSas
                     StartP2P(response, scene, caller, sessionId, body);
                     break;
 
-                // As the core module: methods that do not gate the session.
+                // The callee declined (or let the 30 s incoming-call dialog run out): the caller is told.
                 case "decline p2p voice":
+                    response.StatusCode = (int)HttpStatusCode.OK;
+                    Declined(caller, sessionId);
+                    break;
+
+                // As the core module: methods that do not gate the session.
                 case "decline invitation":
                 case "accept invitation":
                 case "invite":
@@ -334,6 +339,27 @@ namespace osWebRtcSas
                 caller.UUID);
             response.StatusCode = (int)HttpStatusCode.OK;
             // The viewer follows this with "call", which rings the other person.
+        }
+
+        /// <summary>
+        /// The callee declined a P2P call: the caller's viewer is sent the session's agent list with the callee unable to
+        /// voice chat, which it shows as "declined" and ends the call (LLIMMgr::processAgentListUpdates). Only for
+        /// callers on this simulator, like ringing.
+        /// </summary>
+        private static void Declined(ScenePresence callee, UUID sessionId)
+        {
+            var callerId = new UUID(sessionId.ulonga ^ callee.UUID.ulonga, sessionId.ulongb ^ callee.UUID.ulongb);
+            foreach (var s in SceneManager.Instance.Scenes)
+            {
+                if (s.TryGetScenePresence(callerId, out ScenePresence caller) && !caller.IsChildAgent && !caller.IsNPC)
+                {
+                    s.RequestModuleInterface<IEventQueue>()?.ChatterBoxSessionAgentListUpdates(sessionId, callerId,
+                        [new GroupChatListAgentUpdateData(callee.UUID, true) { canVoice = false }]);
+                    Log.Info($"{LogHeader} {callee.Name} declined the call from {caller.Name}");
+                    return;
+                }
+            }
+            Log.Info($"{LogHeader} {callee.Name} declined a call from {callerId}, who is not on this simulator: not told");
         }
 
         /// <summary>Rings the other person of a P2P call, if they are on this simulator.</summary>

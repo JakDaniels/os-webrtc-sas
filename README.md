@@ -48,7 +48,8 @@ OpenSim's own `WebRtcVoiceRegionModule` cannot start these calls yet: it answers
 the voice channel and never rings a P2P callee (a core patch for OpenSim is written up in
 [`core-patches/`](core-patches/)). So this add-on includes a region module, `SasCallsModule`, that answers `ChatSessionRequest`
 in its place (`Calls = true`): `call` gets the channel (the IM session id) if the avatar may use it (a member of the
-group; for P2P, the session must be theirs with another avatar), and `start p2p voice` also rings the callee. The
+group; for P2P, the session must be theirs with another avatar) and, for P2P, rings the other avatar; a decline
+(or the 30 s ring running out) is passed back to the caller, whose viewer then ends the call. The
 channel is checked again when the viewer joins. A callee on another simulator is not rung yet (they can call back).
 Ad-hoc conferences are refused, as by OpenSim. On an OpenSim whose core handles calls
 (`WebRtcVoiceRegionModule.MultiAgentCallsVersion`), the add-on leaves `ChatSessionRequest` to it.

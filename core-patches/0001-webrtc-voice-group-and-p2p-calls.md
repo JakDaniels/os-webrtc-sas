@@ -57,6 +57,11 @@ follows the Second Life viewer here.
    The viewer shows an incoming-call dialog for 30 s and, on accepting, joins with that channel info (it then
    sends `call` itself).
 
+4. **A declined call.** When the callee declines, or its incoming-call dialog runs out after 30 s, the callee's
+   viewer posts `decline p2p voice`. The caller's viewer learns of it from a `ChatterBoxSessionAgentListUpdates` event
+   for the session listing the callee with `info.can_voice_chat: false` (any transition but `LEAVE`): it then shows
+   "P2PCallDeclined" and ends the call (`LLIMMgr::processAgentListUpdates`).
+
    Which requests a caller sends depends on the IM window: with no window open for the other avatar the viewer
    sends `start p2p voice` and then `call`; with the window already open (e.g. a second attempt) it sends only
    `call`. So ringing has to hang off `call`.
@@ -65,7 +70,8 @@ follows the Second Life viewer here.
 
 `WebRtcVoiceRegionModule.ChatSessionRequest` answers `"call"` with a bare `200 OK` (it is in the list of methods
 "we do not implement but which do not gate session initialisation"), so step 1 fails. `"start p2p voice"` sends the
-caller a `ChatterBoxSessionStartReply` but nothing to the callee, so step 3 never happens. Provisioning a
+caller a `ChatterBoxSessionStartReply` but nothing to the callee, so step 3 never happens; and `"decline p2p voice"`
+gets a bare OK, so a caller is never told (step 4) and keeps "calling" until they hang up. Provisioning a
 `multiagent` channel (step 2) is passed to the non-spatial voice service without any check of who may use the
 channel.
 
@@ -80,6 +86,7 @@ All in `WebRtcVoiceRegionModule`:
   from a small map of viewer session to call channel, filled when a call is provisioned; entries whose viewer
   session has gone from `VoiceViewerSession` are dropped.
 - **`"start p2p voice"`**: unchanged (the viewer follows it with `call`, which rings).
+- **`"decline p2p voice"`**: tell the caller (if on this simulator) with the agent-list update above.
 - **`multiagent` provisioning**: check again that the agent may use the channel, so a viewer cannot join a channel
   it was not given; and copy `channel` to `channel_id`, so back ends that read `channel_id` (os-webrtc-janus) get it.
 - **`public const int MultiAgentCallsVersion = 1`**: lets add-ons that worked around this on older versions see
@@ -98,7 +105,7 @@ it is used, so no secret needs to travel with it.
 
 ## Limitations
 
-- **Callees on another simulator are not rung.** The invitation would have to be passed through the grid (for
+- **Callees (and callers told of a decline) on another simulator are not reached.** The invitation would have to be passed through the grid (for
   example as an instant message that the callee's simulator turns back into this event), and both simulators would
   need to understand it. The caller still connects. The callee can call back, and that works from either side, since
   both compute the same channel.

@@ -1,5 +1,5 @@
 --- a/OpenSim/Addons/os-webrtc-janus/WebRtcVoiceRegionModule/WebRtcVoiceRegionModule.cs	2026-11-15 20:55:36.994563410 +0000
-+++ b/OpenSim/Addons/os-webrtc-janus/WebRtcVoiceRegionModule/WebRtcVoiceRegionModule.cs	2026-11-15 21:15:09.795921729 +0000
++++ b/OpenSim/Addons/os-webrtc-janus/WebRtcVoiceRegionModule/WebRtcVoiceRegionModule.cs	2026-11-15 21:57:08.341349839 +0000
 @@ -36,6 +36,7 @@
  using OpenSim.Region.Framework.Scenes;
  using OpenSim.Server.Base;
@@ -55,8 +55,11 @@
                              vSession.Flags = IVoiceViewerSession.VFlags.IsAdmin;
                              VoiceViewerSession.AddViewerSession(vSession);
                              map["gridhash"] = gridHash;
-@@ -749,13 +780,37 @@
-                 case "decline p2p voice":
+@@ -746,16 +777,46 @@
+             {
+                 // Methods we do not implement but which do not gate session initialisation.
+                 // Answering OK is enough; the viewer does not wait on a reply for these.
+-                case "decline p2p voice":
                  case "decline invitation":
                  case "accept invitation":
 -                case "call":
@@ -66,6 +69,13 @@
                      response.StatusCode = (int)HttpStatusCode.OK;
                      break;
  
++                // The callee declined a P2P call (or its 30 s incoming-call dialog ran out): tell the caller,
++                // or their viewer keeps "calling" until they hang up.
++                case "decline p2p voice":
++                    response.StatusCode = (int)HttpStatusCode.OK;
++                    TellCallerDeclined(sp, sessionID);
++                    break;
++
 +                // Starting or joining a group or P2P call: the viewer needs the voice channel in
 +                // "voice_credentials" (LLVoiceChannelGroup::voiceCallCapCoro), or it ends the call with
 +                // "invalid credentials". The channel is the IM session id.
@@ -94,7 +104,7 @@
                  // viewer only does anything if the response body
                  // is an ARRAY, and merely logs otherwise. Answer an explicit empty array: this
                  // is fired automatically after every successful "start p2p voice" when the
-@@ -824,6 +879,7 @@
+@@ -824,6 +885,7 @@
                                  agentID);
  
                          response.StatusCode = (int)HttpStatusCode.OK;
@@ -102,10 +112,11 @@
                      }
                      break;
                  default:
-@@ -833,6 +889,109 @@
+@@ -832,6 +894,128 @@
+             }
          }
  
-         /// <summary>
++        /// <summary>
 +        /// Whether the agent may use the call channel (an IM session id): a group's call (the session id is the
 +        /// group id; the agent must be a member) or a P2P call (the session id is the two agents' ids XORed, so XORed
 +        /// with the agent's own id it must give another avatar: a third person who computes A^B gets nothing).
@@ -209,6 +220,24 @@
 +        }
 +
 +        /// <summary>
++        /// The callee declined a P2P call: the caller's viewer gets the session's agent list with the callee unable to
++        /// voice chat, which it shows as "declined" and ends the call (LLIMMgr::processAgentListUpdates). Only for
++        /// callers on this simulator, like ringing.
++        /// </summary>
++        private static void TellCallerDeclined(ScenePresence callee, UUID sessionID)
++        {
++            UUID callerID = new(sessionID.ulonga ^ callee.UUID.ulonga, sessionID.ulongb ^ callee.UUID.ulongb);
++            foreach (Scene s in SceneManager.Instance.Scenes)
++            {
++                if (s.TryGetScenePresence(callerID, out ScenePresence caller) && !caller.IsChildAgent && !caller.IsNPC)
++                {
++                    s.RequestModuleInterface<IEventQueue>()?.ChatterBoxSessionAgentListUpdates(sessionID, callerID,
++                        [new GroupChatListAgentUpdateData(callee.UUID, true) { canVoice = false }]);
++                    return;
++                }
++            }
++        }
++
+         /// <summary>
          /// Convert the LLSDXml body of the request to an OSDMap for easier handling.
          /// Also logs the request if message details is enabled.
-         /// </summary>
