@@ -53,6 +53,15 @@ cp addon-modules/os-webrtc-sas/os-webrtc-sas.ini.example bin/config/os-webrtc-sa
 Set `ServerURI` and `APIKey` in `[SasWebRtcVoice]` (create a key on the server with
 `SpatialAudioServer apikey create <label>`). Voice must also be allowed in the estate and parcel settings.
 
+### Parcels and the region's voice channel
+
+A parcel either shares the region's voice channel (room `region:{regionId}`) or has its own (room
+`parcel:{regionId}:{GlobalID}`), set by **Restrict Voice to this parcel** in the viewer's Parcel Details, Sound tab
+(the parcel flag `UseEstateVoiceChan` is the opposite of that box). Unlike Second Life, **OpenSim's default parcel has
+the box ticked**: a new region's single parcel has a voice room of its own, and parcels subdivided from it copy that.
+Untick it on every parcel that should share the region's channel. On the simulator console, `land show <local id>`
+lists a parcel's flags: `AllowVoiceChat` (voice on) and `UseEstateVoiceChan` (the region's channel).
+
 The viewer sends its audio to SpatialAudioServer directly, so the server's address and UDP ports must be reachable
 from viewers, not only from the simulator.
 
