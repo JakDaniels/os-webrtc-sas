@@ -1,0 +1,56 @@
+# A release on every push to main (and by hand): the add-on's source as a zip, for an OpenSim source tree's
+# addon-modules folder (unzip there, then runprebuild and build as the README says). Named after the time it was built
+# (UTC), e.g. os-webrtc-sas-20261117-2030.zip in the release "os-webrtc-sas 2026-11-17 20:30" (tag
+# release-20261117-2030). Left out of the zip: core-patches/ (patches for OpenSim core, applied separately), the
+# repository's own files (.gitignore, .github/) and the VS Code workspace file.
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # the tag and the release
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  zip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the commits since the last release, for the notes
+
+      - name: Zip and release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          stamp="$(date -u +%Y%m%d-%H%M)"
+          tag="release-$stamp"
+          name="os-webrtc-sas-$stamp"
+          # The committed files only (git archive), inside a folder os-webrtc-sas/ as addon-modules expects.
+          git archive --format=zip --prefix=os-webrtc-sas/ -o "$name.zip" HEAD -- . \
+            ':(exclude)core-patches' ':(exclude).gitignore' ':(exclude).github' ':(exclude)*.code-workspace'
+          unzip -l "$name.zip"
+          previous="$(git tag -l 'release-*' --sort=-creatordate | head -n 1)"
+          {
+            echo "Built from \`main\` at ${GITHUB_SHA::7}."
+            echo
+            echo "Unzip into an OpenSim source tree's \`addon-modules\` folder, then run prebuild and build OpenSim as"
+            echo "the README says. Core patches (\`core-patches/\`) are not included: see the repository."
+            echo
+            if [ -n "$previous" ]; then
+              echo "Changes since $previous:"
+              echo
+              git log --no-merges --format='- %s' "$previous..HEAD"
+            else
+              echo "The first release."
+            fi
+          } > notes.md
+          gh release create "$tag" "$name.zip" --target "$GITHUB_SHA" --title "os-webrtc-sas $(date -u '+%Y-%m-%d %H:%M')" \
+            --notes-file notes.md
