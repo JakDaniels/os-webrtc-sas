@@ -144,6 +144,24 @@ namespace osWebRtcSas
             return unknown;
         }
 
+        /// <summary>
+        /// Sets web or bot participants' positions in one room, keeping their orientations (the poses endpoint, by
+        /// participant id): where their NPCs were moved in-world. Participants the server no longer has are ignored.
+        /// </summary>
+        public void UpdatePositions(string roomExternalId, IReadOnlyList<(Guid ParticipantId, SasPose Pose)> positions)
+        {
+            var list = new JsonArray();
+            foreach (var (participantId, p) in positions)
+            {
+                list.Add(new JsonObject
+                {
+                    ["participantId"] = participantId.ToString(),
+                    ["position"] = new JsonObject { ["x"] = p.X, ["y"] = p.Y, ["z"] = p.Z },
+                });
+            }
+            Send(HttpMethod.Post, $"api/rooms/by-external/{Escape(roomExternalId)}/poses", new JsonObject { ["poses"] = list }, null);
+        }
+
         /// <summary>Deletes a room (404 is not an error).</summary>
         public void DeleteRoom(string externalId)
         {

@@ -21,7 +21,8 @@ namespace osWebRtcSas
     /// Shows web and bot participants of this simulator's voice rooms in-world as NPCs (<c>WebUserAvatars</c>):
     /// <c>optional</c> for those that ask (the web client's tick box, the load tool's <c>--npc</c>), <c>always</c> for
     /// all. The participant's pose on the server drives the NPC (where the web client or load tool put it, and its
-    /// facing); the NPC is tied to the participant on the server (<c>avatarId</c>), so viewers list and show the NPC.
+    /// facing), and an NPC moved in-world (a push, a script) moves the participant's position on the server in turn; the
+    /// NPC is tied to the participant on the server (<c>avatarId</c>), so viewers list and show the NPC.
     /// Called from the voice service's room poll, once a second.
     /// </summary>
     /// <remarks>
@@ -105,6 +106,7 @@ namespace osWebRtcSas
         public void Update(string room, JsonArray participants)
         {
             var scene = SceneOf(room);
+            var dragged = new List<(Guid, SasPose)>();
             foreach (var p in participants)
             {
                 if (p is not JsonObject participant || !Guid.TryParse((string?)participant["id"], out var id)
@@ -136,11 +138,43 @@ namespace osWebRtcSas
                         presence.Rotation = new Quaternion((float)moved.Qx, (float)moved.Qy, (float)moved.Qz, (float)moved.Qw);
                         npc.Pose = moved;
                     }
+                    else if (npc.Pose is { } placed && Dragged(npc.Scene, presence, placed) is { } there)
+                    {
+                        // Moved in-world (a push, a script) while its voice stayed put: the voice follows the NPC.
+                        dragged.Add((id, there));
+                        npc.Pose = there;
+                    }
                     continue;
                 }
                 _npcs.TryRemove(id, out _); // gone from the scene (removed in-world, region restarted): make another
                 Create(room, scene, id, ((string?)participant["displayName"])?.Trim() ?? "Guest", pose);
             }
+            if (dragged.Count > 0)
+            {
+                try
+                {
+                    _client.UpdatePositions(room, dragged);
+                }
+                catch (SasException e)
+                {
+                    Log.Warn($"{LogHeader} Could not send the positions of NPCs moved in-world in {room}: {e.Message}");
+                }
+            }
+        }
+
+        /// <summary>An NPC further than this from where it was put has been moved in-world.</summary>
+        private const double DragDistance = 0.25;
+
+        /// <summary>
+        /// The NPC's global position (with the placed orientation), if it is more than <see cref="DragDistance"/> from
+        /// where it was put.
+        /// </summary>
+        private static SasPose? Dragged(Scene scene, ScenePresence presence, SasPose placed)
+        {
+            var p = presence.AbsolutePosition;
+            double x = scene.RegionInfo.WorldLocX + p.X, y = scene.RegionInfo.WorldLocY + p.Y, z = p.Z;
+            double dx = x - placed.X, dy = y - placed.Y, dz = z - placed.Z;
+            return dx * dx + dy * dy + dz * dz > DragDistance * DragDistance ? placed with { X = x, Y = y, Z = z } : null;
         }
 
         /// <summary>Removes NPCs whose participant left a room that was read, or whose room is no longer polled.</summary>
