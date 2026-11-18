@@ -1,0 +1,20 @@
+With WebRTC voice, group voice calls and person-to-person (P2P) voice calls do not work. Spatial voice (region
+and parcel) works fine.
+
+What happens:
+- When you start a call (from a group chat, or from an IM with another avatar), the viewer asks the region for
+  the call's voice channel. OpenSim answers "OK" but sends no channel, so the viewer ends the call straight away.
+- The person you call is never told that someone is calling them.
+- If the person called declines, the caller is not told and keeps "calling".
+
+The attached patch fixes all three. It changes one file:
+OpenSim/Addons/os-webrtc-janus/WebRtcVoiceRegionModule/WebRtcVoiceRegionModule.cs
+
+With the patch:
+- The region answers the viewer's "call" request with the call's voice channel, so the call connects.
+- For a P2P call, the person called gets the normal incoming-call dialog (if they are on the same simulator).
+- If they decline, the caller's viewer shows "declined" and ends the call.
+- Only people who belong in a call can get or join its channel: members of the group for a group call, and the
+  two avatars for a P2P call.
+
+Spatial voice is not changed. The patch applies cleanly to current master (9d00a55) with: git apply -p1

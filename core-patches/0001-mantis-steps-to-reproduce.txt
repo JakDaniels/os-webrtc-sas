@@ -1,0 +1,18 @@
+Set-up: OpenSim master with WebRTC voice working (spatial voice can be heard in the region), and a viewer that
+uses WebRTC voice (tested with Firestorm 7.2).
+
+P2P call (needs two avatars, both on the same simulator):
+1. Avatar A opens an IM with avatar B and presses "Call".
+2. Expected: B sees an incoming-call dialog; when B accepts, A and B can talk.
+   Actual: A's call ends almost at once. B sees nothing.
+   A's viewer log shows: "Received invalid credentials for channel ...".
+
+Group call (one avatar is enough):
+1. Open a group's chat window and press "Call" (or "Join Call").
+2. Expected: you join the group's voice call.
+   Actual: the call ends at once, with the same "invalid credentials" line in the viewer log.
+
+Declined call (only with the patch applied, since without it the callee is never rung):
+1. A calls B as above. B presses "Decline" (or lets the 30-second dialog run out).
+2. Expected: A's viewer says the call was declined and ends it.
+   Without the patch's decline handling, A would keep "calling" until hanging up.

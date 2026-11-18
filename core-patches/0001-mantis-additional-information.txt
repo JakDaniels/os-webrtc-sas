@@ -1,0 +1,48 @@
+Why it fails today
+In WebRTC mode the viewer starts every group or P2P call by posting "call" to the ChatSessionRequest capability.
+It expects the reply to contain "voice_credentials" (channel_uri, channel_credentials, voice_server_type). OpenSim
+replies to "call" with a plain 200 OK, so the viewer has no channel and gives up. (Firestorm 7.2 / SL viewer:
+LLVoiceChannelGroup::voiceCallCapCoro.)
+
+What the patch changes (all in WebRtcVoiceRegionModule)
+- "call": replies with voice_credentials. The channel is the IM session id, which both sides of a call already
+  know. A caller who may not use that channel gets 403 (the viewer shows "voice not allowed").
+- P2P ringing: on "call", the other avatar gets a ChatterBoxInvitation event with a "voice" section, which the
+  viewer shows as an incoming call. Ringing is done on "call", not on "start p2p voice", because a viewer whose IM
+  window is already open sends only "call". It does not ring someone who is already in the call (that "call" is
+  them answering).
+- "decline p2p voice": the caller gets a ChatterBoxSessionAgentListUpdates event listing the callee as unable to
+  voice chat, which the viewer shows as "declined".
+- Joining a call (ProvisionVoiceAccountRequest with channel_type "multiagent"): checks again that the agent may use
+  the channel, so a viewer cannot join a call it was not given. It also copies the viewer's "channel" key to
+  "channel_id", because the Janus voice service reads "channel_id"; without it every call would end up in the same
+  Janus room.
+- A public constant, MultiAgentCallsVersion = 1, so add-on modules that worked around this problem on older
+  versions can see that the core now handles calls.
+
+Who may use a call's channel
+- Group call: the session id is the group id, and the avatar must be a member of the group.
+- P2P call: the session id is the two avatars' ids XORed together (the viewer's own convention, also used for IMs).
+  XORing it with the caller's id must give another real avatar (an account on the grid, or a hypergrid visitor
+  present on the simulator). A third person who works out A^B and asks for it gets C^A^B, which is nobody, and is
+  refused.
+- No secret is needed in channel_credentials (it is left empty), because the check is made at the region both
+  when the channel is handed out and when it is used.
+
+Limitations
+- Ringing and "declined" messages only reach avatars on the same simulator. A callee elsewhere on the grid is not
+  rung (it would need the invitation passed through the grid); they can call back, which works from either side.
+- Ad-hoc conferences are still refused, as now.
+- Group members are not rung when someone starts a group call; they join with "Join Call", as for a call in
+  progress.
+
+Testing
+The patch builds against master 9d00a55. The same logic was developed and tested in two related projects:
+- os-webrtc-sas (https://github.com/JakDaniels/os-webrtc-sas): an OpenSim region module that connects WebRTC voice
+  to SpatialAudioServer. Its SasCallsModule (file WebRtcSas/SasCalls.cs) overrides ChatSessionRequest with this same
+  logic on OpenSim versions without the fix, and stands aside when MultiAgentCallsVersion is present.
+- SpatialAudioServer (https://github.com/JakDaniels/SpatialAudioServer): the voice server it talks to, an
+  audio-mixing (MCU) WebRTC server with spatial audio, used here in place of Janus. Each call is one of its rooms.
+Tested live with Firestorm 7.2 on an OpenSim standalone with these two: P2P calls (ringing, answering, declining)
+and group calls. The patch itself does not depend on either: it does not care which voice back end is used
+(Janus or another), though it has only been tested with SpatialAudioServer behind it.
