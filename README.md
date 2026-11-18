@@ -125,6 +125,12 @@ from viewers, not only from the simulator.
 - `sas status`: the server's version and load, and this simulator's voice sessions.
 - `sas rooms`: the rooms on the server.
 
+## Supporting the project
+
+If this add-on is useful to you, you can support its development through
+[GitHub Sponsors](https://github.com/sponsors/JakDaniels) (also the **Sponsor** button at the top of this page).
+Thank you.
+
 ## Licence
 
 Mozilla Public License 2.0 (see `LICENSE`).
