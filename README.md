@@ -33,7 +33,8 @@ client has a "Create an NPC in-world" tick box, its load tool `--npc`), `always`
 region unseen). The NPC has the voice-list name and copies the look of the avatars in `NpcAppearancesFrom` in turn
 (names, avatar UUIDs, or the asset UUIDs of appearance notecards saved with `osAgentSaveAppearance`, which also store
 the baked textures; without any it is a cloud); it stands where the participant is in the room and turns with its Facing control, and
-viewers show its white dot when it talks. It appears only while the participant's position is inside the room's
+viewers show its white dot when it talks. If the NPC is moved in-world (pushed, or by a script) by more than 25 cm, its
+voice moves with it. It appears only while the participant's position is inside the room's
 region, and goes when the participant leaves. NPC ids are stable while the simulator runs (from a start-up secret, the room and the name), so a bot that rejoins
 under the same name, e.g. after a server restart, keeps its entry in viewers' voice lists; removed NPCs and guests are
 reported to the server, so viewers that missed the leave drop them.
