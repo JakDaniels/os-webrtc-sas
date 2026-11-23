@@ -8,6 +8,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json.Nodes;
 using log4net;
 using Nini.Config;
 using OpenMetaverse;
@@ -49,8 +50,17 @@ namespace osWebRtcSas
         /// <summary>Group and P2P calls (multiagent channels) are taken.</summary>
         private readonly bool _calls;
 
-        /// <summary>The distance curve for new rooms (the server's Media:Spatial:Profiles); null = the server's default.</summary>
-        private readonly string? _spatialProfile;
+        /// <summary>
+        /// How new region and parcel rooms sound ([SasWebRtcVoice] SpatialProfile, Engine, Acoustics); a region's
+        /// Regions.ini section overrides each with SasSpatialProfile, SasEngine, SasAcoustics.
+        /// </summary>
+        private readonly RoomSettings _defaults = RoomSettings.ServerDefaults;
+
+        /// <summary>Rooms whose sound settings have been checked (and acoustics applied) since start-up.</summary>
+        private readonly ConcurrentDictionary<string, bool> _settingsChecked = new();
+
+        /// <summary>Rooms whose sound settings the server refused: made, and joined, with the server's defaults.</summary>
+        private readonly ConcurrentDictionary<string, bool> _settingsRefused = new();
         private readonly bool _messageDetails;
         private readonly System.Threading.Timer? _poseTimer;
         private readonly System.Threading.Timer? _nameTimer;
@@ -96,7 +106,8 @@ namespace osWebRtcSas
             }
             _maxParticipants = sas.GetInt("MaxParticipantsPerRoom", 0);
             _calls = sas.GetBoolean("Calls", true);
-            _spatialProfile = sas.GetString("SpatialProfile", string.Empty).Trim() is { Length: > 0 } profile ? profile : null;
+            _defaults = new RoomSettings(Setting(sas.GetString("SpatialProfile", string.Empty)), Setting(sas.GetString("Engine", string.Empty)),
+                Setting(sas.GetString("Acoustics", string.Empty)));
             _messageDetails = sas.GetBoolean("MessageDetails", false);
             _client = new SasClient(serverUri, apiKey, TimeSpan.FromSeconds(sas.GetInt("RequestTimeoutSeconds", 10)),
                 sas.GetBoolean("AcceptSelfSignedCertificate", false));
@@ -228,8 +239,8 @@ namespace osWebRtcSas
                     }
 
                     var room = isCall
-                        ? _client.EnsureRoom(roomId, roomName, spatial: false, "none", _maxParticipants, SasWebUserAvatars.Off, null)
-                        : _client.EnsureRoom(roomId, roomName, spatial: true, ClientPose, _maxParticipants, _webUserAvatarsMode, _spatialProfile);
+                        ? _client.EnsureRoom(roomId, roomName, spatial: false, "none", _maxParticipants, SasWebUserAvatars.Off, RoomSettings.ServerDefaults)
+                        : EnsureSpatialRoom(roomId, roomName, scene);
                     if (!string.Equals((string?)room["inWorldAvatars"], _webUserAvatarsMode, StringComparison.OrdinalIgnoreCase))
                     {
                         _client.UpdateRoom(roomId, _webUserAvatarsMode);
@@ -597,6 +608,89 @@ namespace osWebRtcSas
         /// module has already checked permissions and removed parcel_local_id when the parcel uses the estate channel.
         /// Parcels are keyed by their GlobalID, which survives subdividing and joining (the local id does not).
         /// </summary>
+        /// <summary>
+        /// Gets or makes a region or parcel room with its region's sound settings. A setting the server does not have
+        /// (e.g. the acoustic engine without its plugin) is logged, and the room made with the server's defaults.
+        /// </summary>
+        private JsonObject EnsureSpatialRoom(string roomId, string roomName, Scene scene)
+        {
+            var settings = _settingsRefused.ContainsKey(roomId) ? RoomSettings.ServerDefaults : SettingsFor(scene);
+            JsonObject room;
+            try
+            {
+                room = _client!.EnsureRoom(roomId, roomName, spatial: true, ClientPose, _maxParticipants, _webUserAvatarsMode, settings);
+            }
+            catch (SasException e) when (e.Status == 400 && settings != RoomSettings.ServerDefaults)
+            {
+                Log.Warn($"{LogHeader} SpatialAudioServer refused the sound settings for {roomName} ({Describe(settings)}): {e.Message} " +
+                    "Using the server's defaults.");
+                _settingsRefused[roomId] = true;
+                _settingsChecked[roomId] = true;
+                return _client!.EnsureRoom(roomId, roomName, spatial: true, ClientPose, _maxParticipants, _webUserAvatarsMode, RoomSettings.ServerDefaults);
+            }
+            if (_settingsChecked.TryAdd(roomId, true))
+            {
+                CheckSettings(roomId, roomName, room, settings);
+            }
+            return room;
+        }
+
+        /// <summary>
+        /// Once per room after start-up: applies configured acoustics (which can change) and says when the engine or
+        /// distance curve differ from the configuration (fixed once a room is made).
+        /// </summary>
+        private void CheckSettings(string roomId, string roomName, JsonObject room, RoomSettings settings)
+        {
+            var engine = (string?)room["engine"];
+            var profile = (string?)room["spatialProfile"];
+            var acoustics = (string?)room["acoustics"] ?? "outdoor";
+            if (settings.Acoustics is { } wanted && !string.Equals(wanted, acoustics, StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    room = _client!.UpdateRoomAcoustics(roomId, wanted);
+                    acoustics = (string?)room["acoustics"] ?? "outdoor";
+                    Log.Info($"{LogHeader} Room {roomName}: acoustics changed to {acoustics}");
+                }
+                catch (SasException e)
+                {
+                    Log.Warn($"{LogHeader} Could not set the acoustics of {roomName} to {wanted}: {e.Message}");
+                }
+            }
+            if (settings.Engine is { } wantedEngine && !string.Equals(wantedEngine, engine, StringComparison.OrdinalIgnoreCase))
+            {
+                Log.Warn($"{LogHeader} Room {roomName} on the server uses the {engine} engine, not {wantedEngine}: the engine is fixed once a " +
+                    "room is made. Delete it on the server (when nobody is in it) to have it made again.");
+            }
+            if (settings.SpatialProfile is { } wantedProfile && !string.Equals(wantedProfile, profile, StringComparison.OrdinalIgnoreCase))
+            {
+                Log.Warn($"{LogHeader} Room {roomName} on the server uses the {profile ?? "server's default"} distance curve, not " +
+                    $"{wantedProfile}: it is fixed once a room is made. Delete it on the server (when nobody is in it) to have it made again.");
+            }
+            if (acoustics != "outdoor" && engine != "acoustic")
+            {
+                Log.Warn($"{LogHeader} Room {roomName} has acoustics {acoustics}, but only the acoustic engine renders them (it uses {engine}).");
+            }
+            Log.Info($"{LogHeader} Room {roomName}: engine {engine}, distance curve {profile ?? "server default"}, acoustics {acoustics}");
+        }
+
+        /// <summary>The region's sound settings: its Regions.ini overrides, else [SasWebRtcVoice]. Parcels use their region's.</summary>
+        private RoomSettings SettingsFor(Scene scene) => new(
+            Override(scene, "SasSpatialProfile", _defaults.SpatialProfile),
+            Override(scene, "SasEngine", _defaults.Engine),
+            Override(scene, "SasAcoustics", _defaults.Acoustics));
+
+        /// <summary>A region's own value if it sets one (empty or missing: the simulator's).</summary>
+        private static string? Override(Scene scene, string key, string? simulatorValue) =>
+            scene.RegionInfo.GetSetting(key) is { } value && value.Trim().Length > 0 ? Setting(value) : simulatorValue;
+
+        /// <summary>A setting's value; empty or "default" = the server's default (null).</summary>
+        private static string? Setting(string? value) =>
+            value?.Trim() is { Length: > 0 } text && !text.Equals("default", StringComparison.OrdinalIgnoreCase) ? text.ToLowerInvariant() : null;
+
+        private static string Describe(RoomSettings settings) =>
+            $"engine {settings.Engine ?? "default"}, distance curve {settings.SpatialProfile ?? "default"}, acoustics {settings.Acoustics ?? "default"}";
+
         private static (string ExternalId, string Name) RoomFor(Scene scene, OSDMap request)
         {
             var regionName = scene.RegionInfo.RegionName;
@@ -670,6 +764,12 @@ namespace osWebRtcSas
                 var status = _client.Status();
                 console.Output($"SpatialAudioServer {(string?)status["version"]} at {_client.Server}: " +
                     $"{(int?)status["rooms"]} rooms, {(int?)status["participants"]} participants, GStreamer {(string?)status["gstreamer"]?["version"]}");
+                var engines = (status["engines"] as JsonArray ?? []).Select(e => (string?)e?["name"]).OfType<string>();
+                console.Output($"  Engines: {string.Join(", ", engines)} (spatial rooms default to {(string?)status["defaultSpatialEngine"]})");
+                if (status["acoustics"] is JsonArray acoustics)
+                {
+                    console.Output($"  Acoustics: {string.Join(", ", acoustics.Select(a => (string?)a))}");
+                }
             }
             catch (SasException e)
             {
