@@ -28,10 +28,28 @@
     ; Room size for new rooms; 0 = the server's default (Limits:MaxParticipantsPerRoom, 32).
     MaxParticipantsPerRoom = 0
 
-    ; The distance curve for new rooms, one of the server's Media:Spatial:Profiles: "outdoor" (physical fall-off,
-    ; the server's default) or "meeting" (SL's Vivox settings: full volume to 10 m, silent from 35 m). Empty: the
-    ; server's default. Only applies when a room is created (delete a room on the server to have it made again).
+    ; How voice sounds in this simulator's regions. These three are the defaults for every region; a region can
+    ; override each in its own section of Regions.ini, as SasSpatialProfile, SasEngine and SasAcoustics, e.g.
+    ;   [My Region]
+    ;   RegionUUID = ...
+    ;   SasEngine = acoustic
+    ;   SasAcoustics = cathedral
+    ; A parcel with its own voice channel sounds like its region. Empty (or "default"): the server's default.
+
+    ; The distance curve, one of the server's Media:Spatial:Profiles: "outdoor" (physical fall-off, the server's
+    ; default) or "meeting" (SL's Vivox settings: full volume to 10 m, silent from 35 m). Fixed once a room is made:
+    ; delete the room on the server to have it made again.
     SpatialProfile =
+
+    ; The mix engine: "matrix" (the server's default for spatial rooms, Media:SpatialEngine), "matrix-shared",
+    ; "pairchains", or "acoustic" (room acoustics; only on servers with the acousticmultimixer plugin: "sas status"
+    ; on the simulator console lists the server's engines). Fixed once a room is made, like SpatialProfile. A setting the server does not have is logged and the room made with the server's defaults.
+    Engine =
+
+    ; The kind of space, heard only with the acoustic engine: "outdoor" (no reflections), "tiny-room", "small-room",
+    ; "big-room", "hall", "long-hall", "cave" or "cathedral". Applied to existing rooms too, when a viewer first
+    ; joins one after the simulator starts (so it also undoes a change made on the server meanwhile).
+    Acoustics =
 
     ; How often (milliseconds) avatar positions go to the server, for avatars that moved; 0 = only when joining.
     ; The viewer also reports its own position and camera over WebRTC, which the server uses near this one.

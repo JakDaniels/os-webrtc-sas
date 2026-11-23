@@ -19,6 +19,14 @@ namespace osWebRtcSas
     /// <summary>A position and rotation in SpatialAudioServer's form (global coordinates, metres; quaternion).</summary>
     public readonly record struct SasPose(double X, double Y, double Z, double Qx, double Qy, double Qz, double Qw);
 
+    /// <summary>
+    /// How a new room sounds: the distance curve, the mix engine and the acoustics; null = the server's default.
+    /// </summary>
+    public sealed record RoomSettings(string? SpatialProfile, string? Engine, string? Acoustics)
+    {
+        public static readonly RoomSettings ServerDefaults = new(null, null, null);
+    }
+
     /// <summary>A failed request to SpatialAudioServer, with its HTTP status (0 when the server could not be reached).</summary>
     public sealed class SasException(int status, string message) : Exception(message)
     {
@@ -63,15 +71,23 @@ namespace osWebRtcSas
         /// when it is created; the reply shows the room as it is.
         /// </summary>
         public JsonObject EnsureRoom(string externalId, string name, bool spatial, string clientPose, int maxParticipants, string inWorldAvatars,
-            string? spatialProfile)
+            RoomSettings settings)
         {
             var body = new JsonObject
             {
                 ["name"] = name, ["spatial"] = spatial, ["clientPose"] = clientPose, ["inWorldAvatars"] = inWorldAvatars,
             };
-            if (spatialProfile is not null)
+            if (settings.SpatialProfile is not null)
             {
-                body["spatialProfile"] = spatialProfile;
+                body["spatialProfile"] = settings.SpatialProfile;
+            }
+            if (settings.Engine is not null)
+            {
+                body["engine"] = settings.Engine;
+            }
+            if (settings.Acoustics is not null)
+            {
+                body["acoustics"] = settings.Acoustics;
             }
             if (maxParticipants > 0)
             {
@@ -90,6 +106,10 @@ namespace osWebRtcSas
             }
             Send(HttpMethod.Post, $"api/rooms/by-external/{Escape(roomExternalId)}/viewers-gone", new JsonObject { ["keys"] = list }, null);
         }
+
+        /// <summary>Sets the room's acoustics, the one sound setting that can change after it is made (PATCH /api/rooms/by-external/{id}).</summary>
+        public JsonObject UpdateRoomAcoustics(string externalId, string acoustics) =>
+            Send(HttpMethod.Patch, $"api/rooms/by-external/{Escape(externalId)}", new JsonObject { ["acoustics"] = acoustics }, null)!;
 
         /// <summary>Sets whether this simulator shows the room's web users in-world (PATCH /api/rooms/by-external/{id}).</summary>
         public JsonObject UpdateRoom(string externalId, string inWorldAvatars) =>
