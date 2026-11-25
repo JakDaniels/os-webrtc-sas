@@ -1,0 +1,14 @@
+diff --git a/OpenSim/Region/PhysicsModules/ubOde/ODECharacter.cs b/OpenSim/Region/PhysicsModules/ubOde/ODECharacter.cs
+index ff32808cdf..99b52f1530 100644
+--- a/OpenSim/Region/PhysicsModules/ubOde/ODECharacter.cs
++++ b/OpenSim/Region/PhysicsModules/ubOde/ODECharacter.cs
+@@ -1152,6 +1152,9 @@ namespace OpenSim.Region.PhysicsModule.ubOde
+                 // clear residuals
+                 UBOdeNative.BodySetAngularVel(Body, 0f, 0f, 0f);
+                 UBOdeNative.BodySetLinearVel(Body, 0f, 0f, 0f);
++                // hold it where it rests: an avatar made standing still (an NPC) may never have set this, and would be
++                // pulled towards <0,0,0>
++                _zeroPosition = _position;
+                 _zeroFlag = true;
+                 UBOdeNative.BodyEnable(Body);
+             }

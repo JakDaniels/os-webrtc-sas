@@ -1,0 +1,10 @@
+Set-up: OpenSim master, physics = ubODE, NPCs enabled ([NPC] Enabled = true), OSSL NPC functions allowed.
+
+1. Stand on flat ground in the middle of a region, e.g. at <128,128>.
+2. In a prim, run: osNpcCreate("Test", "NPC", llGetPos() + <2,0,0>, llGetOwner());
+3. Watch the NPC for a few seconds (or log osNpcGetPos every 0.2 s).
+
+Expected: the NPC stays where it was made.
+Actual: about a second later it jumps towards the region's corner <0,0>: its X and Y become about 0.9 of what they
+were (from <130,128> to about <117,115>), then it settles there. It does not happen every time; it depends on the
+NPC's body going to sleep before its first movement update.

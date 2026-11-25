@@ -140,9 +140,24 @@ namespace osWebRtcSas
                     }
                     else if (npc.Pose is { } placed && Dragged(npc.Scene, presence, placed) is { } there)
                     {
-                        // Moved in-world (a push, a script) while its voice stayed put: the voice follows the NPC.
-                        dragged.Add((id, there));
-                        npc.Pose = there;
+                        if (DateTime.UtcNow - npc.Created < SettleTime && Local(npc.Scene, placed) is { } back)
+                        {
+                            // Just made: ubODE can throw a new NPC towards the region's corner about a second after it
+                            // appears (see SettleTime). Put it back instead of moving its voice. Moving the physics body
+                            // (not Teleport, which makes a new one with the same fault) also re-arms ubODE's hold, so
+                            // the NPC then stays put.
+                            Log.Debug($"{LogHeader} NPC {presence.Name} moved to {presence.AbsolutePosition} while settling: put back at {back}");
+                            presence.AbsolutePosition = back;
+                            presence.SendTerseUpdateToAllClients();
+                        }
+                        else
+                        {
+                            // Moved in-world (a push, a script) while its voice stayed put: the voice follows the NPC.
+                            Log.Info($"{LogHeader} NPC {presence.Name} moved in-world from {Local(npc.Scene, placed)} to " +
+                                $"{presence.AbsolutePosition}: its voice follows");
+                            dragged.Add((id, there));
+                            npc.Pose = there;
+                        }
                     }
                     continue;
                 }
@@ -161,6 +176,14 @@ namespace osWebRtcSas
                 }
             }
         }
+
+        /// <summary>
+        /// For this long after an NPC is made, an in-world move is not followed but undone. OpenSim's ubODE physics
+        /// wakes a resting avatar after about a second (50 steps) and then holds it at a rest position it never
+        /// recorded for an avatar that was made standing still: (0, 0, 0), so one physics step throws it about 10% of
+        /// the way towards the region's corner (core-patches/0002 fixes ubODE). Moving it back re-arms that hold.
+        /// </summary>
+        private static readonly TimeSpan SettleTime = TimeSpan.FromSeconds(5);
 
         /// <summary>An NPC further than this from where it was put has been moved in-world.</summary>
         private const double DragDistance = 0.25;
@@ -421,6 +444,9 @@ namespace osWebRtcSas
             public Scene Scene { get; } = scene;
             public string Room { get; } = room;
             public SasPose? Pose { get; set; }
+
+            /// <summary>When it was made (see SettleTime).</summary>
+            public DateTime Created { get; } = DateTime.UtcNow;
         }
     }
 }
