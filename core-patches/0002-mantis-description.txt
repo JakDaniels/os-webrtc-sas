@@ -1,0 +1,11 @@
+With the ubODE physics engine, an NPC created standing on open ground often jumps about a second after it appears.
+Its X and Y are multiplied by about 0.9, so it lands some way off towards the region's corner <0,0> (about 27 m
+for an NPC made at <222,168>) and stays there. Z hardly changes.
+
+Cause: in OpenSim/Region/PhysicsModules/ubOde/ODECharacter.cs, Move() wakes a sleeping avatar body (after
+m_bodydisablecontrol reaches 50) and sets _zeroFlag = true, but not _zeroPosition. An NPC is made standing still, so
+its body goes to sleep before Move() ever runs the "just stopped" branch that records _zeroPosition. It is still
+Vector3.Zero, and the position controller pulls the NPC towards <0,0,0>.
+
+The attached one-line patch records _zeroPosition = _position there. It applies to current master (9d00a55) with:
+git apply -p1

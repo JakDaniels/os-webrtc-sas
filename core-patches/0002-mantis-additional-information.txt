@@ -1,0 +1,23 @@
+Why: ODECharacter.Move() holds a standing avatar at _zeroPosition (the position controller under
+"if (m_pidControllerActive)"). _zeroPosition is recorded when the avatar comes to a stop
+("if (!_zeroFlag) { _zeroFlag = true; _zeroPosition = _position; }"). The branch that wakes a sleeping body,
+
+    if (!UBOdeNative.BodyIsEnabled(Body))
+    {
+        if (++m_bodydisablecontrol < 50)
+            return;
+        ...
+        _zeroFlag = true;
+        UBOdeNative.BodyEnable(Body);
+    }
+
+sets _zeroFlag but leaves _zeroPosition as it was. For an avatar made at rest (an NPC), that is Vector3.Zero, so the
+controller pulls it towards <0,0,0>. One step moves it a fixed fraction of the way, which is why the result looks
+like the position scaled about the corner.
+
+The patch adds _zeroPosition = _position; before _zeroFlag = true; there. _position is kept up to date while the
+body sleeps, so the avatar is held where it rests. Viewer avatars are not affected in practice (they arrive moving),
+and nothing else changes.
+
+Found while showing web voice users in-world as NPCs (os-webrtc-sas add-on), which now works around it by putting a
+new NPC back if it moves in its first seconds.

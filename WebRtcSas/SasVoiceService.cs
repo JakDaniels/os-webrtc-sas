@@ -84,6 +84,11 @@ namespace osWebRtcSas
         /// <summary>Our sessions, by viewer session id. OpenSim's own registry forgets them before telling us about some logouts.</summary>
         private readonly ConcurrentDictionary<string, SasViewerSession> _sessions = new();
 
+        /// <summary>The configured service (OpenSim makes one for both spatial and call voice), for the script functions.</summary>
+        internal static SasVoiceService? Current { get; private set; }
+
+        internal SasClient Client => _client!;
+
         public SasVoiceService(IConfigSource config)
         {
             var voice = config.Configs["WebRtcVoice"];
@@ -111,6 +116,7 @@ namespace osWebRtcSas
             _messageDetails = sas.GetBoolean("MessageDetails", false);
             _client = new SasClient(serverUri, apiKey, TimeSpan.FromSeconds(sas.GetInt("RequestTimeoutSeconds", 10)),
                 sas.GetBoolean("AcceptSelfSignedCertificate", false));
+            Current ??= this;
 
             try
             {
@@ -612,7 +618,7 @@ namespace osWebRtcSas
         /// Gets or makes a region or parcel room with its region's sound settings. A setting the server does not have
         /// (e.g. the acoustic engine without its plugin) is logged, and the room made with the server's defaults.
         /// </summary>
-        private JsonObject EnsureSpatialRoom(string roomId, string roomName, Scene scene)
+        internal JsonObject EnsureSpatialRoom(string roomId, string roomName, Scene scene)
         {
             var settings = _settingsRefused.ContainsKey(roomId) ? RoomSettings.ServerDefaults : SettingsFor(scene);
             JsonObject room;
@@ -630,43 +636,58 @@ namespace osWebRtcSas
             }
             if (_settingsChecked.TryAdd(roomId, true))
             {
-                CheckSettings(roomId, roomName, room, settings);
+                CheckSettings(roomId, roomName, room, settings, SasRoomScripts.ControllerOf(room, roomId) is not null);
             }
             return room;
         }
 
+        /// <summary>The script functions have set this room: the configuration no longer applies to it (until restart).</summary>
+        internal void ScriptSet(string roomId) => _settingsChecked[roomId] = true;
+
         /// <summary>
-        /// Once per room after start-up: applies configured acoustics (which can change) and says when the engine or
-        /// distance curve differ from the configuration (fixed once a room is made).
+        /// Once per room after start-up: applies the configured acoustics (at once), engine and distance curve (the
+        /// server switches the room's media to those when it is next empty), unless a script in-world controls the room.
         /// </summary>
-        private void CheckSettings(string roomId, string roomName, JsonObject room, RoomSettings settings)
+        private void CheckSettings(string roomId, string roomName, JsonObject room, RoomSettings settings, bool scriptControlled)
         {
+            if (scriptControlled)
+            {
+                Log.Info($"{LogHeader} Room {roomName}: set by a script in-world, not by the configuration");
+            }
+            else
+            {
+                var changes = new JsonObject();
+                if (settings.Acoustics is { } wanted && !string.Equals(wanted, (string?)room["acoustics"] ?? "outdoor", StringComparison.OrdinalIgnoreCase))
+                {
+                    changes["acoustics"] = wanted;
+                }
+                if (settings.Engine is { } wantedEngine && !string.Equals(wantedEngine, (string?)room["engine"], StringComparison.OrdinalIgnoreCase))
+                {
+                    changes["engine"] = wantedEngine;
+                }
+                if (settings.SpatialProfile is { } wantedProfile
+                    && !string.Equals(wantedProfile, (string?)room["spatialProfile"], StringComparison.OrdinalIgnoreCase))
+                {
+                    changes["spatialProfile"] = wantedProfile;
+                }
+                if (changes.Count > 0)
+                {
+                    var what = string.Join(", ", changes.Select(c => $"{c.Key} {c.Value}"));
+                    try
+                    {
+                        room = _client!.UpdateRoom(roomId, changes);
+                        Log.Info($"{LogHeader} Room {roomName}: {what} from the configuration" +
+                            (room["inUse"] is null ? "" : " (the engine and distance curve change when the room is next empty)"));
+                    }
+                    catch (SasException e)
+                    {
+                        Log.Warn($"{LogHeader} Could not set {what} on {roomName}: {e.Message}");
+                    }
+                }
+            }
             var engine = (string?)room["engine"];
             var profile = (string?)room["spatialProfile"];
             var acoustics = (string?)room["acoustics"] ?? "outdoor";
-            if (settings.Acoustics is { } wanted && !string.Equals(wanted, acoustics, StringComparison.OrdinalIgnoreCase))
-            {
-                try
-                {
-                    room = _client!.UpdateRoomAcoustics(roomId, wanted);
-                    acoustics = (string?)room["acoustics"] ?? "outdoor";
-                    Log.Info($"{LogHeader} Room {roomName}: acoustics changed to {acoustics}");
-                }
-                catch (SasException e)
-                {
-                    Log.Warn($"{LogHeader} Could not set the acoustics of {roomName} to {wanted}: {e.Message}");
-                }
-            }
-            if (settings.Engine is { } wantedEngine && !string.Equals(wantedEngine, engine, StringComparison.OrdinalIgnoreCase))
-            {
-                Log.Warn($"{LogHeader} Room {roomName} on the server uses the {engine} engine, not {wantedEngine}: the engine is fixed once a " +
-                    "room is made. Delete it on the server (when nobody is in it) to have it made again.");
-            }
-            if (settings.SpatialProfile is { } wantedProfile && !string.Equals(wantedProfile, profile, StringComparison.OrdinalIgnoreCase))
-            {
-                Log.Warn($"{LogHeader} Room {roomName} on the server uses the {profile ?? "server's default"} distance curve, not " +
-                    $"{wantedProfile}: it is fixed once a room is made. Delete it on the server (when nobody is in it) to have it made again.");
-            }
             if (acoustics != "outdoor" && engine != "acoustic")
             {
                 Log.Warn($"{LogHeader} Room {roomName} has acoustics {acoustics}, but only the acoustic engine renders them (it uses {engine}).");
@@ -690,6 +711,20 @@ namespace osWebRtcSas
 
         private static string Describe(RoomSettings settings) =>
             $"engine {settings.Engine ?? "default"}, distance curve {settings.SpatialProfile ?? "default"}, acoustics {settings.Acoustics ?? "default"}";
+
+        /// <summary>
+        /// The voice room of a parcel, as OpenSim's voice module picks it: the parcel's own unless it uses the region's
+        /// (estate) channel. Parcel is true for the parcel's own room.
+        /// </summary>
+        internal static (string ExternalId, string Name, bool Parcel) RoomForParcel(Scene scene, ILandObject? parcel)
+        {
+            var regionName = scene.RegionInfo.RegionName;
+            if (parcel?.LandData is { } land && (land.Flags & (uint)ParcelFlags.UseEstateVoiceChan) == 0)
+            {
+                return ($"parcel:{scene.RegionInfo.RegionID}:{land.GlobalID}", $"{regionName}: {land.Name}", true);
+            }
+            return ($"region:{scene.RegionInfo.RegionID}", regionName, false);
+        }
 
         private static (string ExternalId, string Name) RoomFor(Scene scene, OSDMap request)
         {

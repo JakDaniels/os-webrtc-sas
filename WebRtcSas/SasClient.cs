@@ -107,9 +107,9 @@ namespace osWebRtcSas
             Send(HttpMethod.Post, $"api/rooms/by-external/{Escape(roomExternalId)}/viewers-gone", new JsonObject { ["keys"] = list }, null);
         }
 
-        /// <summary>Sets the room's acoustics, the one sound setting that can change after it is made (PATCH /api/rooms/by-external/{id}).</summary>
-        public JsonObject UpdateRoomAcoustics(string externalId, string acoustics) =>
-            Send(HttpMethod.Patch, $"api/rooms/by-external/{Escape(externalId)}", new JsonObject { ["acoustics"] = acoustics }, null)!;
+        /// <summary>Changes a room (PATCH /api/rooms/by-external/{id}): acoustics, metadata (merged by key), in-world avatars.</summary>
+        public JsonObject UpdateRoom(string externalId, JsonObject changes) =>
+            Send(HttpMethod.Patch, $"api/rooms/by-external/{Escape(externalId)}", changes, null)!;
 
         /// <summary>Sets whether this simulator shows the room's web users in-world (PATCH /api/rooms/by-external/{id}).</summary>
         public JsonObject UpdateRoom(string externalId, string inWorldAvatars) =>

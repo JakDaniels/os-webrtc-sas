@@ -37,19 +37,31 @@
     ; A parcel with its own voice channel sounds like its region. Empty (or "default"): the server's default.
 
     ; The distance curve, one of the server's Media:Spatial:Profiles: "outdoor" (physical fall-off, the server's
-    ; default) or "meeting" (SL's Vivox settings: full volume to 10 m, silent from 35 m). Fixed once a room is made:
-    ; delete the room on the server to have it made again.
+    ; default) or "meeting" (SL's Vivox settings: full volume to 10 m, silent from 35 m). Applied to existing rooms
+    ; when a viewer first joins one after the simulator starts; the server switches the room to it when nobody is in it.
     SpatialProfile =
 
     ; The mix engine: "matrix" (the server's default for spatial rooms, Media:SpatialEngine), "matrix-shared",
     ; "pairchains", or "acoustic" (room acoustics; only on servers with the acousticmultimixer plugin: "sas status"
-    ; on the simulator console lists the server's engines). Fixed once a room is made, like SpatialProfile. A setting the server does not have is logged and the room made with the server's defaults.
+    ; on the simulator console lists the server's engines). Applied like SpatialProfile. A setting the server does not
+    ; have is logged, and the room made with the server's defaults.
     Engine =
 
     ; The kind of space, heard only with the acoustic engine: "outdoor" (no reflections), "tiny-room", "small-room",
     ; "big-room", "hall", "long-hall", "cave" or "cathedral". Applied to existing rooms too, when a viewer first
     ; joins one after the simulator starts (so it also undoes a change made on the server meanwhile).
     Acoustics =
+
+    ; Script functions to read and set a voice room's sound from in-world (sasSetRoomParameters and others; see the
+    ; README and scripts/sas-room-acoustics.lsl). A room set by a script keeps its settings: SpatialProfile, Engine
+    ; and Acoustics above no longer apply to it. Scripts also need OpenSim's switch for module functions, [OSSL] AllowMODFunctions = true
+    ; (on in OpenSim's default osslDefaultEnable.ini).
+    ScriptFunctions = true
+
+    ; When a region starts, delete the server's voice rooms of its parcels that no longer exist (joined into another
+    ; parcel, or the land reset), unless people are in them. A parcel that only switched to the region's channel keeps
+    ; its room and settings.
+    DeleteOldParcelRooms = true
 
     ; How often (milliseconds) avatar positions go to the server, for avatars that moved; 0 = only when joining.
     ; The viewer also reports its own position and camera over WebRTC, which the server uses near this one.
