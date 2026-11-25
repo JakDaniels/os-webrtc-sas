@@ -80,3 +80,10 @@
 
     ; Log each provision request (without the SDP) at debug level.
     MessageDetails = false
+
+[Startup]
+    ; STUN servers for viewers, which OpenSim sends them in the simulator features. Required: a region that sends
+    ; none gives WebRTC viewers an empty STUN list, and their voice never starts (the viewer log says "ICE server
+    ; parsing failed: Empty uri"; the simulator log shows only logout requests). OpenSim.ini.example sets these same
+    ; two in [Startup]: if your OpenSim.ini already has them, this changes nothing. host:port, comma-separated.
+    StunServers = stun.l.google.com:19302, stun.cloudflare.com:3478

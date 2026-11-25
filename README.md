@@ -108,6 +108,23 @@ cp addon-modules/os-webrtc-sas/os-webrtc-sas.ini.example bin/config/os-webrtc-sa
 Set `ServerURI` and `APIKey` in `[SasWebRtcVoice]` (create a key on the server with
 `SpatialAudioServer apikey create <label>`). Voice must also be allowed in the estate and parcel settings.
 
+**The simulator must give viewers STUN servers.** On OpenSim grids, WebRTC viewers take their STUN servers from
+the region's simulator features (`stun-servers`), which OpenSim fills from `StunServers`. A region that sets none
+gives viewers an empty list, and their voice never starts: the viewer cannot create its WebRTC connection (its log
+says `ICE server parsing failed: Empty uri`), so it never sends an offer, the simulator log shows only `logout`
+requests every few seconds, and no room is made on the server. OpenSim's `OpenSim.ini.example` sets it in
+`[Startup]`, but an `OpenSim.ini` written another way (a grid's own, such as OSGrid's) may not have it; the example
+file sets it too:
+
+```ini
+[Startup]
+    StunServers = stun.l.google.com:19302, stun.cloudflare.com:3478
+```
+
+`host:port`, comma-separated (OpenSim adds `stun:`). OpenSim also reads it from `[Const]`, `[GridInfo]` and
+`[SimulatorFeatures]` (the last of these that has it wins). Viewers use these to find their own public address; SpatialAudioServer
+does not need them.
+
 ### How voice sounds: per simulator, per region
 
 `[SasWebRtcVoice]` holds the defaults for every region on the simulator; a region overrides the three sound
