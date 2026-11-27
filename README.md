@@ -216,7 +216,15 @@ acoustics = cathedral
 - `engine`, `distance-curve`: as in the table above (`distance-curve = default`: the server's). They change when
   nobody is in the room: at once if it is empty, else when the last person leaves; until then the getter adds a
   comment saying what is still in use.
-- An unknown key, a repeated key or a bad value refuses the whole set.
+- Acoustic parameters (heard with the `acoustic` engine, at once): any of SpatialAudioServer's room parameters by
+  its element name, e.g. `reverb-decay = 1.6`, `reflection-delays = 12, 20, 33`, or the room's size and surfaces
+  (`room-width`, `room-depth`, `room-height`, `wall-material = stone`, `floor-material = carpet`,
+  `room-contents = furnished`), which then give its reflections and reverb. They override the preset; a key with no
+  value (`reverb-decay =`) or `default` goes back to it. The getter writes every one: those the room sets as lines,
+  the rest as `#` comments with the value the room has now (from its preset, its size, or the server's defaults), so
+  a saved notecard shows what can be tuned. The full list, with ranges, is the server's
+  `GET /api/rooms/{id}/acoustics` (and its admin UI's Acoustics panel).
+- An unknown key, a repeated key or a bad value refuses the whole set, and the reason names the key.
 
 **Who:** a parcel's own room may be set by an object whose owner owns the parcel (or is deeded to the parcel's
 group), or by an estate owner or manager; the region's room only by estate owners and managers. Anyone may read.
@@ -252,6 +260,20 @@ acoustics = cathedral
 # The engine and distance curve change when nobody is in the room (at once if it is empty).
 engine = acoustic
 distance-curve = default
+# Acoustic parameters, heard with the acoustic engine. Lines without # are set here; the # lines show
+# what the room has now. Remove # to set one; write it with no value (e.g. "reverb-decay =") to go back.
+# Room dimensions: with width, depth and height they give the reflections and reverb instead of the preset.
+room-width = 12
+room-depth = 8
+room-height = 4
+floor-material = carpet
+# wall-material = plaster    (now)
+…
+# Reverb.
+# reverb-level = 0    (dB; now)
+reverb-decay = 1.6
+# reverb-treble-decay = 0.3276    (s; from the room's size)
+…
 ```
 
 <details>
@@ -271,6 +293,9 @@ distance-curve = default
 //   engine = acoustic          the server's mix engine (acoustics are heard only with "acoustic")
 //   distance-curve = default   outdoor, meeting, or default (the server's)
 // The engine and distance curve change when nobody is in the room (at once if it is empty).
+// Any acoustic parameter too, heard at once, e.g. reverb-decay = 1.6, room-width = 12, floor-material = carpet,
+// reflection-delays = 12, 20, 33; a key with no value goes back to the preset's. Touching and saving writes them all,
+// the ones not set as # comments with the room's current values.
 //
 // Needs the os-webrtc-sas module, and [OSSL] AllowMODFunctions = true (OpenSim's default). A parcel's own room may be
 // set by the parcel owner or an estate owner/manager; the region's room by estate owners/managers only. One object

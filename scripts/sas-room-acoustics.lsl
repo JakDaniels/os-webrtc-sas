@@ -11,6 +11,9 @@
 //   engine = acoustic          the server's mix engine (acoustics are heard only with "acoustic")
 //   distance-curve = default   outdoor, meeting, or default (the server's)
 // The engine and distance curve change when nobody is in the room (at once if it is empty).
+// Any acoustic parameter too, heard at once, e.g. reverb-decay = 1.6, room-width = 12, floor-material = carpet,
+// reflection-delays = 12, 20, 33; a key with no value goes back to the preset's. Touching and saving writes them all,
+// the ones not set as # comments with the room's current values.
 //
 // Needs the os-webrtc-sas module, and [OSSL] AllowMODFunctions = true (OpenSim's default). A parcel's own room may be
 // set by the parcel owner or an estate owner/manager; the region's room by estate owners/managers only. One object
