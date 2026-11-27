@@ -215,6 +215,7 @@ namespace osWebRtcSas
         /// <summary>One set at a time, so two objects cannot both pass the controller check.</summary>
         private static readonly object SetLock = new();
 
+        /// <summary>The room's own settings; any other key is one of its acoustic parameters, which the server checks.</summary>
         private static readonly string[] Keys = ["room", "acoustics", "engine", "distance-curve"];
 
         public static string Set(Scene scene, SceneObjectPart part, string text, string source)
@@ -315,6 +316,17 @@ namespace osWebRtcSas
                 {
                     changes["spatialProfile"] = curve;
                 }
+                // Acoustic parameters by their notecard keys (the element's property names, which the server accepts):
+                // no value, or "default", goes back to the preset's (or the server's default).
+                var parameters = new JsonObject();
+                foreach (var (key, value) in values.Where(v => !Keys.Contains(v.Key)))
+                {
+                    parameters[key] = value is "" or "default" ? null : value;
+                }
+                if (parameters.Count > 0)
+                {
+                    changes["acousticParameters"] = parameters;
+                }
                 try
                 {
                     room = service.Client.UpdateRoom(roomId, changes);
@@ -325,8 +337,9 @@ namespace osWebRtcSas
                 }
                 service.ScriptSet(roomId);
                 Log.Info($"{LogHeader} Room {roomName}: acoustics {(string?)room["acoustics"] ?? "outdoor"}, engine {(string?)room["engine"]}, " +
-                    $"distance curve {(string?)room["spatialProfile"] ?? "default"}{Waiting(room)}, set by {part.Name} " +
-                    $"({part.UUID}, owner {OwnerName(scene, part.OwnerID)})");
+                    $"distance curve {(string?)room["spatialProfile"] ?? "default"}{Waiting(room)}" +
+                    (parameters.Count > 0 ? $", acoustic parameters {(room["acousticParameters"]?.ToJsonString() ?? "none")}" : "") +
+                    $", set by {part.Name} ({part.UUID}, owner {OwnerName(scene, part.OwnerID)})");
                 return string.Empty;
             }
         }
@@ -367,8 +380,69 @@ namespace osWebRtcSas
                 text.Append("# Set in-world by '").Append(controller.Name).Append("' (owner ").Append(controller.Owner)
                     .Append(") at ").Append(controller.Where).Append(".\n");
             }
+            try
+            {
+                AppendParameters(text, service.Client.Acoustics(roomId));
+            }
+            catch (SasException e)
+            {
+                // A server from before acoustic parameters: the room's settings above are still right.
+                text.Append("# No acoustic parameters from SpatialAudioServer: ").Append(e.Message).Append('\n');
+            }
             return (text.ToString(), null);
         }
+
+        private static readonly (string Group, string Title)[] Groups =
+        [
+            ("dimensions", "Room dimensions: with width, depth and height they give the reflections and reverb instead of the preset."),
+            ("reflections", "Early reflections."),
+            ("reverb", "Reverb."),
+            ("distance", "Distance and direction (overriding the distance curve)."),
+        ];
+
+        /// <summary>
+        /// Every acoustic parameter: those the room sets as lines, the rest commented with the value it has now (from
+        /// the preset, the room's size or the server's defaults), so a builder can see what to change.
+        /// </summary>
+        private static void AppendParameters(StringBuilder text, JsonObject acoustics)
+        {
+            var set = acoustics["acousticParameters"] as JsonObject;
+            var values = acoustics["values"] as JsonObject;
+            var derived = (values?["derived"] as JsonArray)?.Select(n => (string?)n).ToHashSet() ?? [];
+            text.Append("# Acoustic parameters, heard with the acoustic engine. Lines without # are set here; the # lines show\n")
+                .Append("# what the room has now. Remove # to set one; write it with no value (e.g. \"reverb-decay =\") to go back.\n");
+            if (values is null)
+            {
+                text.Append("# (The server cannot show the values in effect: the acousticmultimixer plugin is not installed.)\n");
+            }
+            foreach (var (group, title) in Groups)
+            {
+                text.Append("# ").Append(title).Append('\n');
+                foreach (var parameter in (acoustics["parameters"] as JsonArray ?? []).OfType<JsonObject>().Where(p => (string?)p["group"] == group))
+                {
+                    var key = (string)parameter["key"]!;
+                    var property = (string)parameter["property"]!;
+                    var unit = (string?)parameter["unit"] is { Length: > 0 } u ? $"{u}; " : "";
+                    if (set?[key] is { } value)
+                    {
+                        text.Append(property).Append(" = ").Append(Format(value)).Append('\n');
+                    }
+                    else
+                    {
+                        var now = values?[key] is { } v ? Format(v) : "";
+                        var from = derived.Contains(key) ? "from the room's size" : now.Length == 0 ? "none" : "now";
+                        text.Append("# ").Append(property).Append(" = ").Append(now).Append("    (").Append(unit).Append(from).Append(")\n");
+                    }
+                }
+            }
+        }
+
+        private static string Format(JsonNode value) => value switch
+        {
+            JsonArray list => string.Join(", ", list.Select(v => v is null ? "" : Format(v))),
+            JsonValue v when v.TryGetValue<double>(out var d) => d.ToString("0.####", CultureInfo.InvariantCulture),
+            _ => value.ToString(),
+        };
 
         /// <summary>
         /// The object controlling a room, if the room's metadata names one that is still in the region and still
@@ -428,11 +502,12 @@ namespace osWebRtcSas
                 }
                 var key = line[..equals].Trim().ToLowerInvariant();
                 var value = line[(equals + 1)..].Trim().ToLowerInvariant();
-                if (!Keys.Contains(key))
+                if (!Keys.Contains(key) && !IsParameterKey(key))
                 {
-                    return (values, $"line {i + 1}: unknown key '{key}' (known: {string.Join(", ", Keys)})");
+                    return (values, $"line {i + 1}: '{key}' is not a key (the room's: {string.Join(", ", Keys)}; or an acoustic parameter)");
                 }
-                if (value.Length == 0)
+                // No value: an acoustic parameter goes back to the preset's; the room's own keys need one.
+                if (value.Length == 0 && Keys.Contains(key))
                 {
                     return (values, $"line {i + 1}: {key} has no value");
                 }
@@ -443,6 +518,9 @@ namespace osWebRtcSas
             }
             return (values, null);
         }
+
+        /// <summary>Looks like an acoustic parameter's key (e.g. reverb-decay); the server says whether it is one.</summary>
+        private static bool IsParameterKey(string key) => key.Length is > 0 and <= 40 && key.All(c => c is >= 'a' and <= 'z' or '-');
 
         private static string OwnerName(Scene scene, UUID id) =>
             scene.RequestModuleInterface<IUserManagement>()?.GetUserName(id) is { Length: > 0 } name ? name : id.ToString();

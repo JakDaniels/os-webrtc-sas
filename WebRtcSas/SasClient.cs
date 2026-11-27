@@ -5,6 +5,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -110,6 +111,13 @@ namespace osWebRtcSas
         /// <summary>Changes a room (PATCH /api/rooms/by-external/{id}): acoustics, metadata (merged by key), in-world avatars.</summary>
         public JsonObject UpdateRoom(string externalId, JsonObject changes) =>
             Send(HttpMethod.Patch, $"api/rooms/by-external/{Escape(externalId)}", changes, null)!;
+
+        /// <summary>
+        /// The room's acoustics (GET /api/rooms/by-external/{id}/acoustics): its preset, the acoustic parameters it sets,
+        /// every value in effect, and what each parameter is (its notecard key is the element property).
+        /// </summary>
+        public JsonObject Acoustics(string externalId) =>
+            Send(HttpMethod.Get, $"api/rooms/by-external/{Escape(externalId)}/acoustics", null, null)!;
 
         /// <summary>Sets whether this simulator shows the room's web users in-world (PATCH /api/rooms/by-external/{id}).</summary>
         public JsonObject UpdateRoom(string externalId, string inWorldAvatars) =>
@@ -288,13 +296,21 @@ namespace osWebRtcSas
             }
         }
 
-        /// <summary>The detail (or title) of an RFC 9457 problem reply, or the text itself.</summary>
-        private static string ProblemText(string text)
+        /// <summary>
+        /// The detail (or title) of an RFC 9457 problem reply, with its field errors ("acousticParameters.reverb-decay:
+        /// must be a number") when it has them, or the text itself.
+        /// </summary>
+        internal static string ProblemText(string text)
         {
             try
             {
                 if (JsonNode.Parse(text) is JsonObject problem)
                 {
+                    if (problem["errors"] is JsonObject { Count: > 0 } errors)
+                    {
+                        return string.Join("; ", errors.Select(e =>
+                            $"{e.Key}: {string.Join(", ", (e.Value as JsonArray)?.Select(m => (string?)m) ?? [e.Value?.ToString()])}"));
+                    }
                     return (string?)problem["detail"] ?? (string?)problem["title"] ?? text;
                 }
             }
